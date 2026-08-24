@@ -85,21 +85,20 @@ $("#signup-form").addEventListener("submit", async (e) => {
   const email = $("#signup-email").value.trim();
   const password = $("#signup-password").value;
 
-  const { data, error } = await supabaseClient.auth.signUp({ email, password });
+  const { data, error } = await supabaseClient.auth.signUp({
+    email,
+    password,
+    options: { data: { username } },
+  });
   if (error) {
     $("#signup-error").textContent = "Registrierung fehlgeschlagen: " + error.message;
     return;
   }
 
-  // Falls E-Mail-Bestätigung deaktiviert ist, existiert sofort eine Session.
-  if (data.user) {
-    const { error: profileError } = await supabaseClient
-      .from("profiles")
-      .insert({ id: data.user.id, username });
-    if (profileError && !profileError.message.includes("duplicate")) {
-      $("#signup-error").textContent = "Konto erstellt, aber Profil-Fehler: " + profileError.message;
-    }
-  }
+  // Das Profil (Tabelle "profiles") wird automatisch per Datenbank-Trigger
+  // angelegt, sobald der Nutzer in auth.users erstellt wird - siehe
+  // supabase-schema.sql. Das funktioniert auch, wenn die E-Mail noch
+  // nicht bestätigt ist (dann existiert clientseitig noch keine Sitzung).
 
   if (!data.session) {
     $("#signup-hint").textContent = "Konto erstellt! Bitte bestätige deine E-Mail und melde dich dann an.";
