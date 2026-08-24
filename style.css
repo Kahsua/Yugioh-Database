@@ -276,6 +276,7 @@ input:focus, select:focus {
    ============================================================ */
 .toolbar { display: flex; gap: 0.6rem; align-items: center; margin-bottom: 1rem; flex-wrap: wrap; }
 .toolbar input, .toolbar select { flex: 1; min-width: 180px; }
+.toolbar select { flex: 0 1 150px; min-width: 130px; }
 .toolbar-stat { color: var(--text-muted); font-size: 0.82rem; font-family: var(--font-mono); white-space: nowrap; }
 
 .card-list { display: flex; flex-direction: column; gap: 0.55rem; }
@@ -374,6 +375,9 @@ input:focus, select:focus {
   border: 1px solid var(--panel-border); padding: 0.3rem 0.6rem; border-radius: 6px;
 }
 .modal-desc { font-size: 0.83rem; color: var(--text-muted); line-height: 1.5; max-height: 110px; overflow-y: auto; }
+.modal-desc-full { max-height: 220px; }
+.detail-footer-row { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.85rem; }
+.card-row { cursor: pointer; }
 .modal-add-row { display: flex; gap: 0.6rem; align-items: flex-end; margin-top: 1rem; }
 .modal-add-row label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.78rem; color: var(--text-muted); }
 .modal-add-row input { width: 70px; }

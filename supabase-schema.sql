@@ -16,7 +16,7 @@ create table if not exists profiles (
 create table if not exists cards (
   id bigint generated always as identity primary key,
   owner_id uuid references auth.users on delete cascade not null,
-  ygo_id integer not null,
+  ygo_id integer,
   name_de text,
   name_en text not null,
   card_type text,
@@ -28,6 +28,9 @@ create table if not exists cards (
   image_url text,
   quantity integer not null default 1,
   notes text,
+  effect_text text,
+  archetype text,
+  scale integer,
   created_at timestamptz default now()
 );
 
@@ -68,3 +71,37 @@ create policy "cards_update_own" on cards
 drop policy if exists "cards_delete_own" on cards;
 create policy "cards_delete_own" on cards
   for delete using (auth.uid() = owner_id);
+
+-- ============================================================
+-- Automatisches Anlegen des Profils bei Registrierung
+-- ============================================================
+-- Läuft serverseitig (SECURITY DEFINER = umgeht RLS), damit das Profil
+-- auch dann angelegt wird, wenn die E-Mail noch nicht bestätigt ist und
+-- somit clientseitig noch keine aktive Sitzung existiert.
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer set search_path = public
+as $$
+begin
+  insert into public.profiles (id, username)
+  values (
+    new.id,
+    coalesce(new.raw_user_meta_data->>'username', split_part(new.email, '@', 1))
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row execute procedure public.handle_new_user();
+
+-- ============================================================
+-- Migration für bereits bestehende Projekte (gefahrlos mehrfach ausführbar)
+-- ============================================================
+alter table cards add column if not exists effect_text text;
+alter table cards add column if not exists archetype text;
+alter table cards add column if not exists scale integer;

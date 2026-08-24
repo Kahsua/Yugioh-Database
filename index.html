@@ -97,6 +97,14 @@
   <section id="view-mine" class="view">
     <div class="toolbar">
       <input type="text" id="mine-filter" placeholder="In meiner Sammlung filtern …" />
+      <select id="mine-category-filter">
+        <option value="">Alle Kategorien</option>
+        <option value="monster">Monster</option>
+        <option value="spell">Zauber</option>
+        <option value="trap">Falle</option>
+      </select>
+      <select id="mine-attribute-filter"><option value="">Alle Attribute</option></select>
+      <select id="mine-race-filter"><option value="">Alle Typen</option></select>
       <span class="toolbar-stat" id="mine-count"></span>
     </div>
     <div id="mine-list" class="card-list"></div>
@@ -109,6 +117,14 @@
       <select id="all-owner-filter">
         <option value="">Alle Besitzer</option>
       </select>
+      <select id="all-category-filter">
+        <option value="">Alle Kategorien</option>
+        <option value="monster">Monster</option>
+        <option value="spell">Zauber</option>
+        <option value="trap">Falle</option>
+      </select>
+      <select id="all-attribute-filter"><option value="">Alle Attribute</option></select>
+      <select id="all-race-filter"><option value="">Alle Typen</option></select>
       <span class="toolbar-stat" id="all-count"></span>
     </div>
     <div id="all-list" class="card-list"></div>
@@ -171,6 +187,32 @@
 </div>
 
 <div id="toast" class="toast hidden"></div>
+
+<!-- ===================== DETAIL MODAL ===================== -->
+<div id="detail-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <button class="modal-close" id="detail-modal-close">✕</button>
+    <div class="modal-body">
+      <img id="detail-img" class="modal-img" src="" alt="" />
+      <div class="modal-info">
+        <div class="modal-type-badge" id="detail-type-badge"></div>
+        <h2 id="detail-name-de"></h2>
+        <p class="modal-name-en" id="detail-name-en"></p>
+        <div class="modal-stats" id="detail-stats"></div>
+        <p class="modal-desc modal-desc-full" id="detail-desc"></p>
+        <div class="detail-footer-row">
+          <span class="card-row-owner" id="detail-owner"></span>
+          <span class="card-row-qty" id="detail-qty"></span>
+        </div>
+        <div class="modal-add-row hidden" id="detail-edit-row">
+          <button class="icon-btn" data-action="dec" title="Anzahl verringern">−</button>
+          <button class="icon-btn" data-action="inc" title="Anzahl erhöhen">+</button>
+          <button class="icon-btn danger" data-action="del" title="Löschen">🗑</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
