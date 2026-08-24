@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Kartenarchiv</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<div class="bg-glow"></div>
+
+<!-- ===================== AUTH SCREEN ===================== -->
+<div id="auth-screen" class="auth-screen">
+  <div class="auth-card">
+    <div class="auth-emblem">☥</div>
+    <h1 class="auth-title">Kartenarchiv</h1>
+    <p class="auth-sub">Eure gemeinsame Yu-Gi-Oh-Sammlung</p>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" data-tab="login">Anmelden</button>
+      <button class="auth-tab" data-tab="signup">Registrieren</button>
+    </div>
+
+    <form id="login-form" class="auth-form">
+      <label>E-Mail
+        <input type="email" id="login-email" required autocomplete="email" />
+      </label>
+      <label>Passwort
+        <input type="password" id="login-password" required autocomplete="current-password" />
+      </label>
+      <button type="submit" class="btn btn-primary">Anmelden</button>
+      <p class="auth-error" id="login-error"></p>
+    </form>
+
+    <form id="signup-form" class="auth-form hidden">
+      <label>Anzeigename
+        <input type="text" id="signup-username" required placeholder="z.B. Max" />
+      </label>
+      <label>E-Mail
+        <input type="email" id="signup-email" required autocomplete="email" />
+      </label>
+      <label>Passwort
+        <input type="password" id="signup-password" required minlength="6" autocomplete="new-password" />
+      </label>
+      <button type="submit" class="btn btn-primary">Konto erstellen</button>
+      <p class="auth-error" id="signup-error"></p>
+      <p class="auth-hint" id="signup-hint"></p>
+    </form>
+
+    <p class="auth-config-warning" id="config-warning" hidden>
+      ⚠ Es ist noch kein Supabase-Projekt verbunden. Bitte <code>config.js</code> ausfüllen (siehe README.md).
+    </p>
+  </div>
+</div>
+
+<!-- ===================== APP SHELL ===================== -->
+<div id="app" class="app hidden">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-emblem">☥</span>
+      <span class="brand-name">Kartenarchiv</span>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="collect">Karte hinzufügen</button>
+      <button class="tab" data-view="mine">Meine Sammlung</button>
+      <button class="tab" data-view="all">Alle Sammlungen</button>
+      <button class="tab" data-view="import">Import</button>
+    </nav>
+    <div class="user-chip">
+      <span id="user-label"></span>
+      <button id="logout-btn" class="btn-ghost">Abmelden</button>
+    </div>
+  </header>
+
+  <!-- ===================== VIEW: COLLECT (Suche & Hinzufügen) ===================== -->
+  <section id="view-collect" class="view active">
+    <div class="search-panel">
+      <div class="search-row">
+        <input type="text" id="search-input" placeholder="Kartenname suchen (deutsch oder englisch) …" autocomplete="off" />
+        <div class="lang-toggle" id="lang-toggle">
+          <button class="lang-btn active" data-lang="de">DE</button>
+          <button class="lang-btn" data-lang="en">EN</button>
+        </div>
+      </div>
+      <p class="search-hint">Tipp: Mindestens 3 Zeichen eingeben. Die Suche durchsucht beide Sprachen automatisch.</p>
+    </div>
+
+    <div id="search-status" class="search-status"></div>
+    <div id="search-results" class="results-grid"></div>
+  </section>
+
+  <!-- ===================== VIEW: MEINE SAMMLUNG ===================== -->
+  <section id="view-mine" class="view">
+    <div class="toolbar">
+      <input type="text" id="mine-filter" placeholder="In meiner Sammlung filtern …" />
+      <span class="toolbar-stat" id="mine-count"></span>
+    </div>
+    <div id="mine-list" class="card-list"></div>
+  </section>
+
+  <!-- ===================== VIEW: ALLE SAMMLUNGEN ===================== -->
+  <section id="view-all" class="view">
+    <div class="toolbar">
+      <input type="text" id="all-filter" placeholder="Über alle Sammlungen filtern …" />
+      <select id="all-owner-filter">
+        <option value="">Alle Besitzer</option>
+      </select>
+      <span class="toolbar-stat" id="all-count"></span>
+    </div>
+    <div id="all-list" class="card-list"></div>
+  </section>
+
+  <!-- ===================== VIEW: IMPORT ===================== -->
+  <section id="view-import" class="view">
+    <div class="import-panel">
+      <h2 class="import-title">Bestehende Sammlung importieren</h2>
+      <p class="import-desc">
+        Lade eine CSV-Datei mit den Spalten <code>Deutsch, Englisch, Kartenart, Kartentyp,
+        Eigenschaft, Typ, Stufe_Rang_Link, ATK, DEF, Anzahl</code> hoch. Jede Karte wird per
+        Name automatisch mit der YGOPRODeck-Datenbank abgeglichen (Bild + offizielle ID),
+        alle Karten werden anschließend in <strong>deiner</strong> Sammlung gespeichert.
+      </p>
+
+      <label class="file-drop" id="file-drop">
+        <input type="file" id="import-file" accept=".csv" />
+        <span id="file-drop-label">CSV-Datei auswählen …</span>
+      </label>
+
+      <div class="import-actions">
+        <button id="import-start-btn" class="btn btn-primary" disabled>Import starten</button>
+        <button id="import-cancel-btn" class="btn-ghost hidden">Abbrechen</button>
+      </div>
+
+      <div id="import-progress-wrap" class="import-progress-wrap hidden">
+        <div class="import-progress-bar"><div id="import-progress-fill" class="import-progress-fill"></div></div>
+        <p id="import-status" class="import-status"></p>
+      </div>
+
+      <div id="import-results" class="import-results hidden"></div>
+    </div>
+  </section>
+
+</div>
+
+<!-- ===================== ADD MODAL ===================== -->
+<div id="add-modal" class="modal-overlay hidden">
+  <div class="modal">
+    <button class="modal-close" id="modal-close">✕</button>
+    <div class="modal-body">
+      <img id="modal-img" class="modal-img" src="" alt="" />
+      <div class="modal-info">
+        <div class="modal-type-badge" id="modal-type-badge"></div>
+        <h2 id="modal-name-de"></h2>
+        <p class="modal-name-en" id="modal-name-en"></p>
+        <div class="modal-stats" id="modal-stats"></div>
+        <p class="modal-desc" id="modal-desc"></p>
+        <div class="modal-add-row">
+          <label>Anzahl
+            <input type="number" id="modal-qty" value="1" min="1" max="99" />
+          </label>
+          <button id="modal-save" class="btn btn-primary">Zur Sammlung hinzufügen</button>
+        </div>
+        <p class="modal-msg" id="modal-msg"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
