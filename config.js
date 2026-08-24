@@ -12,6 +12,6 @@
 // ============================================================
 
 window.YGO_CONFIG = {
-  SUPABASE_URL: "https://psijjhnajmayblxgyurl.supabase.co/rest/v1/",
+  SUPABASE_URL: "https://psijjhnajmayblxgyurl.supabase.co/rest/v1",
   SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InBzaWpqaG5ham1heWJseGd5dXJsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc1NDk0MDEsImV4cCI6MjEwMzEyNTQwMX0.KGvFjV0voWqiunLubkrsncuIMsoPG_xBMDDPB-Y2QjA",
 };
