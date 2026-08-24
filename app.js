@@ -51,6 +51,35 @@ function debounce(fn, ms) {
   };
 }
 
+// Supabase/PostgREST liefert standardmäßig max. 1000 Zeilen pro Anfrage.
+// Diese Hilfsfunktion holt bei Bedarf mehrere Seiten und fügt sie zusammen,
+// damit auch große Sammlungen (>1000 Karten) vollständig geladen werden.
+async function fetchAllRows(queryFactory) {
+  const pageSize = 1000;
+  let from = 0;
+  let all = [];
+  while (true) {
+    const { data, error } = await queryFactory().range(from, from + pageSize - 1);
+    if (error) return { data: null, error };
+    all = all.concat(data || []);
+    if (!data || data.length < pageSize) break;
+    from += pageSize;
+  }
+  return { data: all, error: null };
+}
+
+async function logHistory(action, cardName, { cardId, qtyBefore, qtyAfter } = {}) {
+  if (!supabaseClient || !currentSession) return;
+  await supabaseClient.from("history").insert({
+    owner_id: currentSession.user.id,
+    card_id: cardId ?? null,
+    card_name: cardName,
+    action,
+    quantity_before: qtyBefore ?? null,
+    quantity_after: qtyAfter ?? null,
+  });
+}
+
 // ============================================================
 // AUTH SCREEN LOGIC
 // ============================================================
@@ -165,6 +194,7 @@ $all(".tab").forEach((tab) => {
     $("#view-" + view).classList.add("active");
     if (view === "mine") renderMineList();
     if (view === "all") renderAllList();
+    if (view === "history") renderHistory();
   });
 });
 
@@ -245,7 +275,8 @@ async function runSearch(query) {
       level: canonical.level ?? canonical.linkval,
       archetype: canonical.archetype || null,
       scale: canonical.scale ?? null,
-      desc: (de || en).desc,
+      desc_de: de ? de.desc : null,
+      desc_en: en ? en.desc : null,
       image: canonical.card_images && canonical.card_images[0] ? canonical.card_images[0].image_url : "",
     };
   });
@@ -295,7 +326,8 @@ function openAddModal(card) {
   if (card.atk != null) stats.push(`ATK ${card.atk}`);
   if (card.def != null) stats.push(`DEF ${card.def}`);
   $("#modal-stats").innerHTML = stats.map((s) => `<span>${s}</span>`).join("");
-  $("#modal-desc").textContent = card.desc || "";
+  $("#modal-desc-de").textContent = card.desc_de || "Kein deutscher Kartentext verfügbar.";
+  $("#modal-desc-en").textContent = card.desc_en || "No English card text available.";
   $("#modal-qty").value = 1;
   $("#modal-msg").textContent = "";
   $("#add-modal").classList.remove("hidden");
@@ -324,7 +356,8 @@ $("#modal-save").addEventListener("click", async () => {
     level: modalCard.level,
     image_url: modalCard.image,
     quantity: qty,
-    effect_text: modalCard.desc || null,
+    effect_text_de: modalCard.desc_de || null,
+    effect_text_en: modalCard.desc_en || null,
     archetype: modalCard.archetype || null,
     scale: modalCard.scale ?? null,
   });
@@ -337,6 +370,7 @@ $("#modal-save").addEventListener("click", async () => {
   $("#modal-msg").style.color = "var(--spell)";
   $("#modal-msg").textContent = "Zur Sammlung hinzugefügt!";
   showToast(`${qty}× "${modalCard.name_de || modalCard.name_en}" gespeichert`);
+  logHistory("add", modalCard.name_de || modalCard.name_en, { qtyAfter: qty });
   renderMineList();
   renderAllList();
   setTimeout(() => $("#add-modal").classList.add("hidden"), 700);
@@ -347,11 +381,9 @@ $("#modal-save").addEventListener("click", async () => {
 // ============================================================
 async function renderMineList() {
   if (!supabaseClient || !currentSession) return;
-  const { data, error } = await supabaseClient
-    .from("cards")
-    .select("*")
-    .eq("owner_id", currentSession.user.id)
-    .order("created_at", { ascending: false });
+  const { data, error } = await fetchAllRows(() =>
+    supabaseClient.from("cards").select("*").eq("owner_id", currentSession.user.id).order("created_at", { ascending: false })
+  );
 
   if (error) {
     $("#mine-list").innerHTML = `<div class="empty-state">Fehler beim Laden: ${error.message}</div>`;
@@ -359,13 +391,17 @@ async function renderMineList() {
   }
 
   populateFilterOptions("#mine-attribute-filter", data, "attribute");
-  populateFilterOptions("#mine-race-filter", data, "race");
+  populateFilterOptionsByCategory("#mine-monster-type-filter", data, "monster", "Monstertyp …");
+  populateFilterOptionsByCategory("#mine-spell-type-filter", data, "spell", "Zaubertyp …");
+  populateFilterOptionsByCategory("#mine-trap-type-filter", data, "trap", "Fallentyp …");
 
   const filtered = applyFilters(data, {
     text: $("#mine-filter").value,
     category: $("#mine-category-filter").value,
     attribute: $("#mine-attribute-filter").value,
-    race: $("#mine-race-filter").value,
+    monsterType: $("#mine-monster-type-filter").value,
+    spellType: $("#mine-spell-type-filter").value,
+    trapType: $("#mine-trap-type-filter").value,
   });
 
   const totalCount = data.reduce((sum, c) => sum + c.quantity, 0);
@@ -374,10 +410,12 @@ async function renderMineList() {
   renderCardList("#mine-list", filtered, { showOwner: false, editable: true });
 }
 
-["#mine-filter"].forEach((sel) => $(sel).addEventListener("input", debounce(renderMineList, 200)));
-["#mine-category-filter", "#mine-attribute-filter", "#mine-race-filter"].forEach((sel) =>
-  $(sel).addEventListener("change", renderMineList)
-);
+$("#mine-filter").addEventListener("input", debounce(renderMineList, 200));
+$("#mine-category-filter").addEventListener("change", renderMineList);
+$("#mine-attribute-filter").addEventListener("change", renderMineList);
+[
+  ["#mine-monster-type-filter", "#mine-spell-type-filter", "#mine-trap-type-filter"],
+].forEach((group) => wireExclusiveTypeFilters(group, renderMineList));
 
 // ============================================================
 // ALLE SAMMLUNGEN
@@ -386,10 +424,9 @@ async function renderAllList() {
   if (!supabaseClient) return;
   await loadAllProfiles();
 
-  const { data, error } = await supabaseClient
-    .from("cards")
-    .select("*")
-    .order("created_at", { ascending: false });
+  const { data, error } = await fetchAllRows(() =>
+    supabaseClient.from("cards").select("*").order("created_at", { ascending: false })
+  );
 
   if (error) {
     $("#all-list").innerHTML = `<div class="empty-state">Fehler beim Laden: ${error.message}</div>`;
@@ -408,13 +445,17 @@ async function renderAllList() {
   ownerSelect.value = currentSelection;
 
   populateFilterOptions("#all-attribute-filter", data, "attribute");
-  populateFilterOptions("#all-race-filter", data, "race");
+  populateFilterOptionsByCategory("#all-monster-type-filter", data, "monster", "Monstertyp …");
+  populateFilterOptionsByCategory("#all-spell-type-filter", data, "spell", "Zaubertyp …");
+  populateFilterOptionsByCategory("#all-trap-type-filter", data, "trap", "Fallentyp …");
 
   const filtered = applyFilters(data, {
     text: $("#all-filter").value,
     category: $("#all-category-filter").value,
     attribute: $("#all-attribute-filter").value,
-    race: $("#all-race-filter").value,
+    monsterType: $("#all-monster-type-filter").value,
+    spellType: $("#all-spell-type-filter").value,
+    trapType: $("#all-trap-type-filter").value,
     owner: ownerSelect.value,
   });
 
@@ -424,10 +465,11 @@ async function renderAllList() {
   renderCardList("#all-list", filtered, { showOwner: true, editable: false });
 }
 
-["#all-filter"].forEach((sel) => $(sel).addEventListener("input", debounce(renderAllList, 200)));
-["#all-owner-filter", "#all-category-filter", "#all-attribute-filter", "#all-race-filter"].forEach((sel) =>
+$("#all-filter").addEventListener("input", debounce(renderAllList, 200));
+["#all-owner-filter", "#all-category-filter", "#all-attribute-filter"].forEach((sel) =>
   $(sel).addEventListener("change", renderAllList)
 );
+wireExclusiveTypeFilters(["#all-monster-type-filter", "#all-spell-type-filter", "#all-trap-type-filter"], renderAllList);
 
 // ============================================================
 // FILTER-HELFER
@@ -450,19 +492,62 @@ function populateFilterOptions(selectSel, data, field) {
   select.value = current;
 }
 
-function applyFilters(data, { text, category, attribute, race, owner }) {
+// Befüllt ein Typ-Dropdown nur mit den "race"-Werten, die innerhalb EINER
+// Kategorie vorkommen (z.B. nur Monstertypen wie Krieger/Magier/Drache,
+// nicht vermischt mit Zauber-/Fallen-Unterarten).
+function populateFilterOptionsByCategory(selectSel, data, category, placeholderText) {
+  const select = $(selectSel);
+  const current = select.value;
+  const values = [
+    ...new Set(data.filter((c) => typeCategory(c.card_type) === category).map((c) => c.race).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b, "de"));
+  select.innerHTML = `<option value="">${placeholderText}</option>`;
+  values.forEach((v) => {
+    const opt = document.createElement("option");
+    opt.value = v;
+    opt.textContent = v;
+    select.appendChild(opt);
+  });
+  select.value = current;
+}
+
+// Die drei Typ-Dropdowns (Monster/Zauber/Falle) schließen sich gegenseitig aus:
+// Wählt man in einem einen Wert, werden die beiden anderen zurückgesetzt.
+function wireExclusiveTypeFilters(selectors, onChange) {
+  selectors.forEach((sel) => {
+    $(sel).addEventListener("change", () => {
+      if ($(sel).value) {
+        selectors.filter((s) => s !== sel).forEach((s) => ($(s).value = ""));
+      }
+      onChange();
+    });
+  });
+}
+
+function applyFilters(data, { text, category, attribute, monsterType, spellType, trapType, owner }) {
   const textVal = (text || "").toLowerCase();
   return data.filter((c) => {
+    const cat = typeCategory(c.card_type);
     const matchesText =
       !textVal ||
       (c.name_de || "").toLowerCase().includes(textVal) ||
       (c.name_en || "").toLowerCase().includes(textVal) ||
       (c.archetype || "").toLowerCase().includes(textVal);
-    const matchesCategory = !category || typeCategory(c.card_type) === category;
+    const matchesCategory = !category || cat === category;
     const matchesAttribute = !attribute || c.attribute === attribute;
-    const matchesRace = !race || c.race === race;
+    const matchesMonsterType = !monsterType || (cat === "monster" && c.race === monsterType);
+    const matchesSpellType = !spellType || (cat === "spell" && c.race === spellType);
+    const matchesTrapType = !trapType || (cat === "trap" && c.race === trapType);
     const matchesOwner = !owner || c.owner_id === owner;
-    return matchesText && matchesCategory && matchesAttribute && matchesRace && matchesOwner;
+    return (
+      matchesText &&
+      matchesCategory &&
+      matchesAttribute &&
+      matchesMonsterType &&
+      matchesSpellType &&
+      matchesTrapType &&
+      matchesOwner
+    );
   });
 }
 
@@ -536,6 +621,7 @@ function renderCardList(containerSel, cards, { showOwner, editable }) {
 async function updateQty(card, newQty) {
   const { error } = await supabaseClient.from("cards").update({ quantity: newQty }).eq("id", card.id);
   if (error) return showToast("Fehler: " + error.message);
+  logHistory("update", card.name_de || card.name_en, { cardId: card.id, qtyBefore: card.quantity, qtyAfter: newQty });
   renderMineList();
   renderAllList();
 }
@@ -544,6 +630,7 @@ async function deleteCard(card) {
   const { error } = await supabaseClient.from("cards").delete().eq("id", card.id);
   if (error) return showToast("Fehler: " + error.message);
   showToast(`"${card.name_de || card.name_en}" entfernt`);
+  logHistory("delete", card.name_de || card.name_en, { qtyBefore: card.quantity });
   renderMineList();
   renderAllList();
 }
@@ -570,7 +657,8 @@ function openDetailModal(card, editable) {
   if (card.def != null) stats.push(`DEF ${card.def}`);
   $("#detail-stats").innerHTML = stats.map((s) => `<span>${s}</span>`).join("");
 
-  $("#detail-desc").textContent = card.effect_text || "Kein Kartentext hinterlegt.";
+  $("#detail-desc-de").textContent = card.effect_text_de || "Kein deutscher Kartentext hinterlegt.";
+  $("#detail-desc-en").textContent = card.effect_text_en || "No English card text available.";
 
   $("#detail-owner").textContent = profilesCache[card.owner_id] ? "Besitzer: " + profilesCache[card.owner_id] : "";
   $("#detail-owner").style.display = profilesCache[card.owner_id] ? "inline-block" : "none";
@@ -601,6 +689,75 @@ $("#detail-modal-close").addEventListener("click", () => $("#detail-modal").clas
 $("#detail-modal").addEventListener("click", (e) => {
   if (e.target.id === "detail-modal") $("#detail-modal").classList.add("hidden");
 });
+
+// ============================================================
+// VERLAUF
+// ============================================================
+const HISTORY_LABELS = {
+  add: { icon: "＋", label: "Hinzugefügt" },
+  update: { icon: "✎", label: "Anzahl geändert" },
+  delete: { icon: "🗑", label: "Entfernt" },
+  import: { icon: "⇪", label: "Import" },
+};
+
+async function renderHistory() {
+  if (!supabaseClient) return;
+  await loadAllProfiles();
+
+  const { data, error } = await fetchAllRows(() =>
+    supabaseClient.from("history").select("*").order("created_at", { ascending: false }).limit(300)
+  );
+
+  if (error) {
+    $("#history-list").innerHTML = `<div class="empty-state">Fehler beim Laden: ${error.message}</div>`;
+    return;
+  }
+
+  const ownerSelect = $("#history-owner-filter");
+  const currentSelection = ownerSelect.value;
+  const uniqueOwners = [...new Set(data.map((h) => h.owner_id))];
+  ownerSelect.innerHTML =
+    `<option value="">Alle Personen</option>` +
+    uniqueOwners.map((id) => `<option value="${id}">${profilesCache[id] || "Unbekannt"}</option>`).join("");
+  ownerSelect.value = currentSelection;
+
+  const filtered = ownerSelect.value ? data.filter((h) => h.owner_id === ownerSelect.value) : data;
+  $("#history-count").textContent = `${filtered.length} Einträge`;
+
+  const container = $("#history-list");
+  container.innerHTML = "";
+  if (filtered.length === 0) {
+    container.innerHTML = `<div class="empty-state">Noch keine Änderungen protokolliert.</div>`;
+    return;
+  }
+
+  filtered.forEach((h) => {
+    const meta = HISTORY_LABELS[h.action] || { icon: "•", label: h.action };
+    let detail = meta.label;
+    if (h.action === "update") detail = `Anzahl: ${h.quantity_before} → ${h.quantity_after}`;
+    else if (h.action === "add") detail = `Hinzugefügt (${h.quantity_after}×)`;
+    else if (h.action === "delete") detail = `Entfernt (war ${h.quantity_before}×)`;
+
+    const row = document.createElement("div");
+    row.className = "history-row";
+    row.innerHTML = `
+      <div class="history-icon ${h.action}">${meta.icon}</div>
+      <div class="history-main">
+        <div class="history-title">${h.card_name}</div>
+        <div class="history-meta">${profilesCache[h.owner_id] || "Unbekannt"} · ${detail}</div>
+      </div>
+      <div class="history-time">${formatDateTime(h.created_at)}</div>
+    `;
+    container.appendChild(row);
+  });
+}
+
+$("#history-owner-filter").addEventListener("change", renderHistory);
+
+function formatDateTime(iso) {
+  const d = new Date(iso);
+  return d.toLocaleString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
 
 // ============================================================
 // IMPORT (bestehende Excel/CSV-Sammlung)
@@ -677,18 +834,25 @@ async function runImport() {
       enById.set(c.id, c);
       enByName.set(normalizeName(c.name), c);
     });
+    const deById = new Map();
     const deIdByName = new Map();
-    deCards.forEach((c) => deIdByName.set(normalizeName(c.name), c.id));
+    deCards.forEach((c) => {
+      deById.set(c.id, c);
+      deIdByName.set(normalizeName(c.name), c.id);
+    });
 
     fillEl.style.width = "15%";
 
-    // Schritt 2: bereits vorhandene Karten des Nutzers laden, um Duplikate zu erkennen
-    // (und ggf. fehlende Infos wie Kartentext nachträglich zu ergänzen)
+    // Schritt 2: bereits vorhandene Karten des Nutzers laden (mit Pagination,
+    // damit auch Sammlungen >1000 Karten vollständig geprüft werden), um
+    // Duplikate zu erkennen und ggf. fehlende Infos nachzutragen
     statusEl.textContent = "Prüfe vorhandene Sammlung …";
-    const { data: existingCards } = await supabaseClient
-      .from("cards")
-      .select("id, ygo_id, name_de, name_en, effect_text")
-      .eq("owner_id", currentSession.user.id);
+    const { data: existingCards } = await fetchAllRows(() =>
+      supabaseClient
+        .from("cards")
+        .select("id, ygo_id, name_de, name_en, effect_text_de, effect_text_en")
+        .eq("owner_id", currentSession.user.id)
+    );
     const existingByKey = new Map(
       (existingCards || []).map((c) => [
         c.ygo_id ? "id:" + c.ygo_id : "name:" + normalizeName(c.name_de || c.name_en),
@@ -721,18 +885,22 @@ async function runImport() {
 
       const key = matched ? "id:" + matched.id : "name:" + deName;
       const existing = existingByKey.get(key);
+      const deMatch = matched ? deById.get(matched.id) : null;
 
       if (existing) {
         skipped++;
         // Fehlende Zusatzinfos (z.B. Kartentext) bei bereits vorhandenen Karten nachtragen
-        if (!existing.effect_text && matched && matched.desc) {
+        const missingDe = !existing.effect_text_de && deMatch && deMatch.desc;
+        const missingEn = !existing.effect_text_en && matched && matched.desc;
+        if (missingDe || missingEn) {
           toEnrich.push({
             id: existing.id,
-            effect_text: matched.desc,
-            archetype: matched.archetype || null,
-            scale: matched.scale ?? null,
-            image_url: matched.card_images && matched.card_images[0] ? matched.card_images[0].image_url : null,
-            ygo_id: matched.id,
+            effect_text_de: missingDe ? deMatch.desc : existing.effect_text_de,
+            effect_text_en: missingEn ? matched.desc : existing.effect_text_en,
+            archetype: matched ? matched.archetype || null : null,
+            scale: matched ? matched.scale ?? null : null,
+            image_url: matched && matched.card_images && matched.card_images[0] ? matched.card_images[0].image_url : null,
+            ygo_id: matched ? matched.id : null,
           });
         }
         continue;
@@ -755,7 +923,8 @@ async function runImport() {
         level: levelVal,
         image_url: matched && matched.card_images && matched.card_images[0] ? matched.card_images[0].image_url : null,
         quantity: qty,
-        effect_text: matched ? matched.desc : null,
+        effect_text_de: deMatch ? deMatch.desc : null,
+        effect_text_en: matched ? matched.desc : null,
         archetype: matched ? matched.archetype || null : null,
         scale: matched ? matched.scale ?? null : null,
       });
@@ -799,7 +968,8 @@ async function runImport() {
         await supabaseClient
           .from("cards")
           .update({
-            effect_text: e.effect_text,
+            effect_text_de: e.effect_text_de,
+            effect_text_en: e.effect_text_en,
             archetype: e.archetype,
             scale: e.scale,
             image_url: e.image_url,
@@ -816,6 +986,7 @@ async function runImport() {
     fillEl.style.width = "100%";
     statusEl.textContent = "Import abgeschlossen!";
     showResults(toInsert.length, skipped, notFound, toEnrich.length);
+    logHistory("import", `CSV-Import: ${toInsert.length} neu, ${toEnrich.length} ergänzt`, {});
     renderMineList();
     renderAllList();
   } catch (err) {

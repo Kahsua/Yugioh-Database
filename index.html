@@ -68,6 +68,7 @@
       <button class="tab active" data-view="collect">Karte hinzufügen</button>
       <button class="tab" data-view="mine">Meine Sammlung</button>
       <button class="tab" data-view="all">Alle Sammlungen</button>
+      <button class="tab" data-view="history">Verlauf</button>
       <button class="tab" data-view="import">Import</button>
     </nav>
     <div class="user-chip">
@@ -104,7 +105,9 @@
         <option value="trap">Falle</option>
       </select>
       <select id="mine-attribute-filter"><option value="">Alle Attribute</option></select>
-      <select id="mine-race-filter"><option value="">Alle Typen</option></select>
+      <select id="mine-monster-type-filter"><option value="">Monstertyp …</option></select>
+      <select id="mine-spell-type-filter"><option value="">Zaubertyp …</option></select>
+      <select id="mine-trap-type-filter"><option value="">Fallentyp …</option></select>
       <span class="toolbar-stat" id="mine-count"></span>
     </div>
     <div id="mine-list" class="card-list"></div>
@@ -124,10 +127,23 @@
         <option value="trap">Falle</option>
       </select>
       <select id="all-attribute-filter"><option value="">Alle Attribute</option></select>
-      <select id="all-race-filter"><option value="">Alle Typen</option></select>
+      <select id="all-monster-type-filter"><option value="">Monstertyp …</option></select>
+      <select id="all-spell-type-filter"><option value="">Zaubertyp …</option></select>
+      <select id="all-trap-type-filter"><option value="">Fallentyp …</option></select>
       <span class="toolbar-stat" id="all-count"></span>
     </div>
     <div id="all-list" class="card-list"></div>
+  </section>
+
+  <!-- ===================== VIEW: VERLAUF ===================== -->
+  <section id="view-history" class="view">
+    <div class="toolbar">
+      <select id="history-owner-filter">
+        <option value="">Alle Personen</option>
+      </select>
+      <span class="toolbar-stat" id="history-count"></span>
+    </div>
+    <div id="history-list" class="history-list"></div>
   </section>
 
   <!-- ===================== VIEW: IMPORT ===================== -->
@@ -173,7 +189,14 @@
         <h2 id="modal-name-de"></h2>
         <p class="modal-name-en" id="modal-name-en"></p>
         <div class="modal-stats" id="modal-stats"></div>
-        <p class="modal-desc" id="modal-desc"></p>
+        <div class="modal-desc-block">
+          <p class="modal-desc-label">🇩🇪 Deutsch</p>
+          <p class="modal-desc" id="modal-desc-de"></p>
+        </div>
+        <div class="modal-desc-block">
+          <p class="modal-desc-label">🇬🇧 English</p>
+          <p class="modal-desc" id="modal-desc-en"></p>
+        </div>
         <div class="modal-add-row">
           <label>Anzahl
             <input type="number" id="modal-qty" value="1" min="1" max="99" />
@@ -199,7 +222,14 @@
         <h2 id="detail-name-de"></h2>
         <p class="modal-name-en" id="detail-name-en"></p>
         <div class="modal-stats" id="detail-stats"></div>
-        <p class="modal-desc modal-desc-full" id="detail-desc"></p>
+        <div class="modal-desc-block">
+          <p class="modal-desc-label">🇩🇪 Deutsch</p>
+          <p class="modal-desc modal-desc-full" id="detail-desc-de"></p>
+        </div>
+        <div class="modal-desc-block">
+          <p class="modal-desc-label">🇬🇧 English</p>
+          <p class="modal-desc modal-desc-full" id="detail-desc-en"></p>
+        </div>
         <div class="detail-footer-row">
           <span class="card-row-owner" id="detail-owner"></span>
           <span class="card-row-qty" id="detail-qty"></span>

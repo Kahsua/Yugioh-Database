@@ -28,7 +28,8 @@ create table if not exists cards (
   image_url text,
   quantity integer not null default 1,
   notes text,
-  effect_text text,
+  effect_text_de text,
+  effect_text_en text,
   archetype text,
   scale integer,
   created_at timestamptz default now()
@@ -73,6 +74,32 @@ create policy "cards_delete_own" on cards
   for delete using (auth.uid() = owner_id);
 
 -- ============================================================
+-- Verlauf / Änderungsprotokoll
+-- ============================================================
+create table if not exists history (
+  id bigint generated always as identity primary key,
+  owner_id uuid references auth.users on delete cascade not null,
+  card_id bigint references cards(id) on delete set null,
+  card_name text not null,
+  action text not null check (action in ('add', 'update', 'delete', 'import')),
+  quantity_before integer,
+  quantity_after integer,
+  created_at timestamptz default now()
+);
+
+create index if not exists history_created_idx on history (created_at desc);
+
+alter table history enable row level security;
+
+drop policy if exists "history_select_all" on history;
+create policy "history_select_all" on history
+  for select using (true);
+
+drop policy if exists "history_insert_own" on history;
+create policy "history_insert_own" on history
+  for insert with check (auth.uid() = owner_id);
+
+-- ============================================================
 -- Automatisches Anlegen des Profils bei Registrierung
 -- ============================================================
 -- Läuft serverseitig (SECURITY DEFINER = umgeht RLS), damit das Profil
@@ -102,6 +129,16 @@ create trigger on_auth_user_created
 -- ============================================================
 -- Migration für bereits bestehende Projekte (gefahrlos mehrfach ausführbar)
 -- ============================================================
-alter table cards add column if not exists effect_text text;
+alter table cards add column if not exists effect_text_de text;
+alter table cards add column if not exists effect_text_en text;
 alter table cards add column if not exists archetype text;
 alter table cards add column if not exists scale integer;
+
+-- Falls die Spalte "effect_text" (Vorversion) existiert, ihren Inhalt als
+-- englischen Kartentext übernehmen (dort wurde bisher nur Englisch gespeichert):
+do $$
+begin
+  if exists (select 1 from information_schema.columns where table_name = 'cards' and column_name = 'effect_text') then
+    update cards set effect_text_en = effect_text where effect_text_en is null and effect_text is not null;
+  end if;
+end $$;
