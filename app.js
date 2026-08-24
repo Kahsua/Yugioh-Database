@@ -8,9 +8,9 @@ const isConfigured =
   CONFIG.SUPABASE_ANON_KEY &&
   !CONFIG.SUPABASE_ANON_KEY.includes("DEIN-ANON-KEY");
 
-let supabase = null;
+let supabaseClient = null;
 if (isConfigured) {
-  supabase = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
+  supabaseClient = window.supabase.createClient(CONFIG.SUPABASE_URL, CONFIG.SUPABASE_ANON_KEY);
 } else {
   document.getElementById("config-warning").hidden = false;
 }
@@ -67,10 +67,10 @@ $all(".auth-tab").forEach((tab) => {
 $("#login-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   $("#login-error").textContent = "";
-  if (!supabase) return;
+  if (!supabaseClient) return;
   const email = $("#login-email").value.trim();
   const password = $("#login-password").value;
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
+  const { error } = await supabaseClient.auth.signInWithPassword({ email, password });
   if (error) {
     $("#login-error").textContent = "Anmeldung fehlgeschlagen: " + error.message;
   }
@@ -80,12 +80,12 @@ $("#signup-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   $("#signup-error").textContent = "";
   $("#signup-hint").textContent = "";
-  if (!supabase) return;
+  if (!supabaseClient) return;
   const username = $("#signup-username").value.trim();
   const email = $("#signup-email").value.trim();
   const password = $("#signup-password").value;
 
-  const { data, error } = await supabase.auth.signUp({ email, password });
+  const { data, error } = await supabaseClient.auth.signUp({ email, password });
   if (error) {
     $("#signup-error").textContent = "Registrierung fehlgeschlagen: " + error.message;
     return;
@@ -93,7 +93,7 @@ $("#signup-form").addEventListener("submit", async (e) => {
 
   // Falls E-Mail-Bestätigung deaktiviert ist, existiert sofort eine Session.
   if (data.user) {
-    const { error: profileError } = await supabase
+    const { error: profileError } = await supabaseClient
       .from("profiles")
       .insert({ id: data.user.id, username });
     if (profileError && !profileError.message.includes("duplicate")) {
@@ -107,18 +107,18 @@ $("#signup-form").addEventListener("submit", async (e) => {
 });
 
 $("#logout-btn").addEventListener("click", async () => {
-  if (supabase) await supabase.auth.signOut();
+  if (supabaseClient) await supabaseClient.auth.signOut();
 });
 
 // ============================================================
 // SESSION HANDLING
 // ============================================================
 async function initSession() {
-  if (!supabase) return;
-  const { data } = await supabase.auth.getSession();
+  if (!supabaseClient) return;
+  const { data } = await supabaseClient.auth.getSession();
   await handleSessionChange(data.session);
 
-  supabase.auth.onAuthStateChange(async (_event, session) => {
+  supabaseClient.auth.onAuthStateChange(async (_event, session) => {
     await handleSessionChange(session);
   });
 }
@@ -139,7 +139,7 @@ async function handleSessionChange(session) {
 }
 
 async function ensureProfileLoaded(userId) {
-  const { data } = await supabase.from("profiles").select("id, username").eq("id", userId).maybeSingle();
+  const { data } = await supabaseClient.from("profiles").select("id, username").eq("id", userId).maybeSingle();
   if (data) {
     currentUsername = data.username;
     profilesCache[data.id] = data.username;
@@ -147,8 +147,8 @@ async function ensureProfileLoaded(userId) {
 }
 
 async function loadAllProfiles() {
-  if (!supabase) return;
-  const { data, error } = await supabase.from("profiles").select("id, username");
+  if (!supabaseClient) return;
+  const { data, error } = await supabaseClient.from("profiles").select("id, username");
   if (!error && data) {
     data.forEach((p) => (profilesCache[p.id] = p.username));
   }
@@ -310,7 +310,7 @@ $("#modal-save").addEventListener("click", async () => {
   const qty = parseInt($("#modal-qty").value, 10) || 1;
   const btn = $("#modal-save");
   btn.disabled = true;
-  const { error } = await supabase.from("cards").insert({
+  const { error } = await supabaseClient.from("cards").insert({
     owner_id: currentSession.user.id,
     ygo_id: modalCard.id,
     name_de: modalCard.name_de,
@@ -342,8 +342,8 @@ $("#modal-save").addEventListener("click", async () => {
 // MEINE SAMMLUNG
 // ============================================================
 async function renderMineList() {
-  if (!supabase || !currentSession) return;
-  const { data, error } = await supabase
+  if (!supabaseClient || !currentSession) return;
+  const { data, error } = await supabaseClient
     .from("cards")
     .select("*")
     .eq("owner_id", currentSession.user.id)
@@ -373,10 +373,10 @@ $("#mine-filter").addEventListener("input", debounce(renderMineList, 200));
 // ALLE SAMMLUNGEN
 // ============================================================
 async function renderAllList() {
-  if (!supabase) return;
+  if (!supabaseClient) return;
   await loadAllProfiles();
 
-  const { data, error } = await supabase
+  const { data, error } = await supabaseClient
     .from("cards")
     .select("*")
     .order("created_at", { ascending: false });
@@ -476,14 +476,14 @@ function renderCardList(containerSel, cards, { showOwner, editable }) {
 }
 
 async function updateQty(card, newQty) {
-  const { error } = await supabase.from("cards").update({ quantity: newQty }).eq("id", card.id);
+  const { error } = await supabaseClient.from("cards").update({ quantity: newQty }).eq("id", card.id);
   if (error) return showToast("Fehler: " + error.message);
   renderMineList();
   renderAllList();
 }
 
 async function deleteCard(card) {
-  const { error } = await supabase.from("cards").delete().eq("id", card.id);
+  const { error } = await supabaseClient.from("cards").delete().eq("id", card.id);
   if (error) return showToast("Fehler: " + error.message);
   showToast(`"${card.name_de || card.name_en}" entfernt`);
   renderMineList();
@@ -572,7 +572,7 @@ async function runImport() {
 
     // Schritt 2: bereits vorhandene Karten des Nutzers laden, um Duplikate zu vermeiden
     statusEl.textContent = "Prüfe vorhandene Sammlung …";
-    const { data: existingCards } = await supabase
+    const { data: existingCards } = await supabaseClient
       .from("cards")
       .select("ygo_id, name_de, name_en")
       .eq("owner_id", currentSession.user.id);
@@ -652,7 +652,7 @@ async function runImport() {
     for (let i = 0; i < toInsert.length; i += batchSize) {
       const batch = toInsert.slice(i, i + batchSize);
       if (batch.length === 0) continue;
-      const { error } = await supabase.from("cards").insert(batch);
+      const { error } = await supabaseClient.from("cards").insert(batch);
       if (error) throw new Error("Fehler beim Speichern: " + error.message);
       const pct = 75 + Math.round(((i + batch.length) / Math.max(toInsert.length, 1)) * 25);
       fillEl.style.width = pct + "%";
