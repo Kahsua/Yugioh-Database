@@ -65,7 +65,7 @@ Dann im Browser `http://localhost:8000` öffnen.
 
 ### Option B: GitHub Pages (kostenlos, direkt bei GitHub)
 
-1. Erstelle ein neues GitHub-Repository und lade alle Dateien dieses Ordners hoch (`index.html`, `style.css`, `app.js`, `config.js`).
+1. Erstelle ein neues GitHub-Repository und lade **alle Dateien und Ordner** dieses Projekts hoch, inklusive des `icons/`-Ordners (`index.html`, `style.css`, `app.js`, `config.js`, `manifest.json`, `service-worker.js`, `icons/`).
 2. Im Repository: **Settings → Pages**.
 3. Bei **Source** wähle **Deploy from a branch**, Branch `main`, Ordner `/ (root)`.
 4. Speichern – nach 1–2 Minuten ist die Seite unter `https://DEIN-NAME.github.io/DEIN-REPO/` erreichbar.
@@ -78,12 +78,54 @@ kommt aus den RLS-Regeln. Lade nur **niemals** ein `service_role`-Secret hoch.
 ## 5. Nutzung
 
 1. Jede Person aus eurer Gruppe registriert sich einmal mit E-Mail, Passwort und einem Anzeigenamen.
-2. **„Karte hinzufügen"**: Namen eingeben (DE/EN umschaltbar), Karte anklicken, Anzahl eintragen, speichern.
-3. **„Meine Sammlung"**: eigene Karten durchsuchen, Anzahl per +/− anpassen oder löschen.
-4. **„Alle Sammlungen"**: alle Karten aller Mitglieder durchsuchen und nach Besitzer filtern – so seht ihr sofort, wer was hat.
-5. **„Import"**: bestehende Sammlung aus Excel/CSV auf einen Schlag übernehmen (siehe unten).
+2. **„Suchen"**: Namen eingeben (DE/EN umschaltbar), Karte anklicken, Anzahl eintragen, speichern.
+3. **„Scannen"**: Karte per Handykamera fotografieren, Name wird automatisch erkannt und gesucht (siehe unten).
+4. **„Meine Sammlung"**: eigene Karten durchsuchen/filtern, Anzahl per +/− anpassen oder löschen, Klick auf eine Karte zeigt alle Details.
+5. **„Alle Sammlungen"**: alle Karten aller Mitglieder durchsuchen und nach Besitzer/Kategorie/Typ/Attribut filtern.
+6. **„Verlauf"**: zeigt die letzten Änderungen (hinzugefügt/geändert/gelöscht/importiert) – praktisch, um versehentliche Änderungen nachzuvollziehen.
+7. **„Import"**: bestehende Sammlung aus Excel/CSV auf einen Schlag übernehmen.
 
-## 6. Bestehende Sammlung importieren
+## 6. Kartenscan per Kamera
+
+Im Tab **„📷 Scannen"** gibt es zwei Modi:
+
+### Einzelbild
+1. **„Kamera starten"**, Berechtigung erlauben (nur beim ersten Mal nötig).
+2. Karte so halten, dass der **Name oben gut lesbar** ist – gerade, gut beleuchtet, ohne Spiegelungen.
+3. **„Foto aufnehmen"**.
+4. Erkannter Name erscheint editierbar, Suchergebnisse darunter – Karte anklicken, Anzahl eintragen, speichern.
+
+### Auto-Scan (Serie) – für den Ständer/Kartenschacht-Aufbau
+Gedacht genau für dein Szenario: Handy fest positioniert, Karten nacheinander in den Kamerabereich fallen lassen.
+
+1. Modus **„Auto-Scan (Serie)"** wählen, **„Auto-Scan starten"**.
+2. Die App beobachtet das Kamerabild auf Bewegung. Sobald eine Karte kurz **ruhig liegt** (ca. 1 Sekunde), wird sie automatisch fotografiert, erkannt und einer Miniatur-Warteschlange hinzugefügt. Danach wartet die App auf die nächste Bewegung (die nächste Karte fällt rein / die alte wird entfernt), bevor sie erneut auslöst – so wird dieselbe Karte nicht mehrfach erfasst.
+3. Scannst du dieselbe Karte mehrmals hintereinander, erhöht die App automatisch die Anzahl statt eine neue Zeile anzulegen.
+4. **„Scan-Lauf beenden"**, sobald du fertig bist.
+5. Es öffnet sich eine **Übersicht aller erfassten Karten**: Bild, erkannter Name (editierbar), Anzahl, und ein 🔍-Button zum erneuten Suchen, falls die automatische Zuordnung falsch war. Mit 🗑 lassen sich Fehlscans entfernen.
+6. **„Alle bestätigen & speichern"** überträgt alles gesammelt in deine Sammlung.
+
+**Praxistipps für den Auto-Scan:**
+- Gleichmäßiges, helles Licht ohne harte Schatten hilft sowohl der Bewegungserkennung als auch der Texterkennung.
+- Ein einfarbiger, kontrastreicher Hintergrund (z. B. dunkle Matte) verbessert die Bewegungs-Erkennung deutlich.
+- Die Bewegungserkennung reagiert auf **Helligkeitsänderungen im Bild** – funktioniert am zuverlässigsten, wenn nur die Karten selbst sich bewegen (Kamera und Hintergrund bleiben fest).
+- Falls die automatische Erkennung mal daneben liegt: kein Problem, das wird ja erst am Ende in der Übersicht bestätigt, bevor irgendwas gespeichert wird.
+
+**Allgemeiner Hinweis:** Die Texterkennung läuft komplett lokal im Browser (keine Kartenbilder werden hochgeladen) und braucht eine sichere Verbindung (`https://...`, wie bei GitHub Pages üblich) – lokal per Doppelklick auf `index.html` funktioniert das nicht.
+
+## 7. Als App installieren
+
+Die Seite ist eine **Progressive Web App (PWA)** und lässt sich wie eine echte App installieren – auf dem Smartphone und auch auf dem Desktop:
+
+**Am PC (Chrome/Edge):** Seite öffnen → rechts in der Adressleiste erscheint ein Installations-Symbol (⊕ bzw. Bildschirm-Symbol) → klicken → „Installieren". Danach startet die App wie ein eigenständiges Programm, ganz ohne Browser-Drumherum.
+
+**Am Smartphone (Chrome/Android):** Seite öffnen → Menü (⋮) → **„App installieren"** bzw. **„Zum Startbildschirm hinzufügen"**.
+
+**Am iPhone (Safari):** Seite öffnen → Teilen-Symbol → **„Zum Home-Bildschirm"**.
+
+Die App bekommt dann ein eigenes Icon und startet ohne Adressleiste/Browser-UI, exakt wie eine „richtige" App.
+
+## Bestehende Sammlung importieren
 
 Deine bisherige Excel-Datenbank wurde bereits in ein passendes CSV umgewandelt:
 **`Yugioh_Sammlung_Import.csv`** (2.330 Karten, 4.852 Exemplare) liegt in diesem Projektordner.

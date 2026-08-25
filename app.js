@@ -190,6 +190,10 @@ $all(".tab").forEach((tab) => {
     $all(".tab").forEach((t) => t.classList.remove("active"));
     tab.classList.add("active");
     const view = tab.dataset.view;
+    if (view !== "scan") {
+      stopScanCamera();
+      stopAutoScan();
+    }
     $all(".view").forEach((v) => v.classList.remove("active"));
     $("#view-" + view).classList.add("active");
     if (view === "mine") renderMineList();
@@ -243,9 +247,11 @@ async function fetchYgo(query, lang) {
   }
 }
 
-async function runSearch(query) {
-  $("#search-status").textContent = "Suche läuft …";
-  $("#search-results").innerHTML = "";
+async function runSearch(query, statusSel, resultsSel) {
+  statusSel = statusSel || "#search-status";
+  resultsSel = resultsSel || "#search-results";
+  $(statusSel).textContent = "Suche läuft …";
+  $(resultsSel).innerHTML = "";
 
   // Suche parallel in Deutsch (übersetzte Namen) und Englisch (kanonische Daten),
   // damit wir für jede Karte beide Namen + zuverlässige Stat-Felder haben.
@@ -282,15 +288,15 @@ async function runSearch(query) {
   });
 
   if (merged.length === 0) {
-    $("#search-status").textContent = "Keine Karten gefunden.";
+    $(statusSel).textContent = "Keine Karten gefunden.";
     return;
   }
-  $("#search-status").textContent = `${merged.length} Treffer`;
-  renderSearchResults(merged);
+  $(statusSel).textContent = `${merged.length} Treffer`;
+  renderSearchResults(merged, resultsSel);
 }
 
-function renderSearchResults(cards) {
-  const grid = $("#search-results");
+function renderSearchResults(cards, resultsSel) {
+  const grid = $(resultsSel || "#search-results");
   grid.innerHTML = "";
   cards.forEach((card) => {
     const el = document.createElement("div");
@@ -1026,6 +1032,483 @@ function showResults(insertedCount, skippedCount, notFound, enrichedCount) {
     }
   `;
   showToast(`Import fertig: ${insertedCount} neue Karten gespeichert`);
+}
+
+// ============================================================
+// SCANNEN (Kamera + OCR über Tesseract.js)
+// ============================================================
+let scanStream = null;
+let ocrWorker = null;
+let scanMode = "single";
+
+$all("#scan-mode-toggle .lang-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.mode === scanMode) return;
+    stopScanCamera();
+    stopAutoScan();
+    resetScan();
+    scanMode = btn.dataset.mode;
+    $all("#scan-mode-toggle .lang-btn").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    $("#scan-intro-single").classList.toggle("hidden", scanMode !== "single");
+    $("#scan-intro-auto").classList.toggle("hidden", scanMode !== "auto");
+    $("#scan-single-actions").classList.toggle("hidden", scanMode !== "single");
+    $("#scan-auto-actions").classList.toggle("hidden", scanMode !== "auto");
+  });
+});
+
+$("#scan-start-btn").addEventListener("click", startScanCamera);
+$("#scan-retry-btn").addEventListener("click", resetScan);
+$("#scan-capture-btn").addEventListener("click", captureAndRecognize);
+$("#scan-search-btn").addEventListener("click", () => {
+  const q = $("#scan-name-input").value.trim();
+  if (q.length >= 2) runSearch(q, "#scan-search-status", "#scan-results");
+});
+$("#scan-name-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("#scan-search-btn").click();
+});
+
+async function startScanCamera() {
+  $("#scan-status").textContent = "Kamera wird gestartet …";
+  try {
+    scanStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
+      audio: false,
+    });
+  } catch (err) {
+    $("#scan-status").textContent =
+      "Kamera-Zugriff nicht möglich (" + err.message + "). Bitte Kamera-Berechtigung im Browser erlauben.";
+    return null;
+  }
+  const video = $("#scan-video");
+  video.srcObject = scanStream;
+  video.classList.remove("hidden");
+  $("#scan-placeholder").classList.add("hidden");
+  $("#scan-start-btn").classList.add("hidden");
+  $("#scan-capture-btn").classList.remove("hidden");
+  $("#scan-status").textContent = "Kartenname mittig im Bild positionieren, dann Foto aufnehmen.";
+  return scanStream;
+}
+
+function stopScanCamera() {
+  if (scanStream) {
+    scanStream.getTracks().forEach((t) => t.stop());
+    scanStream = null;
+  }
+}
+
+async function captureAndRecognize() {
+  const video = $("#scan-video");
+  const canvas = $("#scan-canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+
+  const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
+  $("#scan-captured-img").src = dataUrl;
+  $("#scan-captured-img").classList.remove("hidden");
+  video.classList.add("hidden");
+  stopScanCamera();
+
+  $("#scan-capture-btn").classList.add("hidden");
+  $("#scan-retry-btn").classList.remove("hidden");
+  $("#scan-status").textContent = "Erkenne Text … (beim ersten Mal dauert das Laden der Erkennung etwas länger)";
+
+  try {
+    const worker = await getOcrWorker();
+    const {
+      data: { text },
+    } = await worker.recognize(canvas);
+
+    const guess = extractLikelyCardName(text);
+    $("#scan-name-row").classList.remove("hidden");
+    $("#scan-name-input").value = guess;
+
+    if (guess) {
+      $("#scan-status").textContent = "Text erkannt – bitte prüfen und ggf. korrigieren:";
+      runSearch(guess, "#scan-search-status", "#scan-results");
+    } else {
+      $("#scan-status").textContent = "Kein eindeutiger Text erkannt. Bitte Namen manuell eingeben.";
+    }
+  } catch (err) {
+    $("#scan-status").textContent = "Fehler bei der Texterkennung: " + err.message;
+    $("#scan-name-row").classList.remove("hidden");
+  }
+}
+
+async function getOcrWorker() {
+  if (!ocrWorker) ocrWorker = await Tesseract.createWorker("eng+deu");
+  return ocrWorker;
+}
+
+// Heuristik: Der Kartenname steht bei Yu-Gi-Oh-Karten immer als erste,
+// prominente Textzeile ganz oben auf der Karte. Wir nehmen die erste
+// brauchbar lange erkannte Zeile und säubern sie von OCR-Störzeichen.
+function extractLikelyCardName(rawText) {
+  const lines = (rawText || "")
+    .split("\n")
+    .map((l) => l.replace(/[^\p{L}\p{N}\s\-,'"!.]/gu, "").trim())
+    .filter((l) => l.length >= 3);
+  return lines.length > 0 ? lines[0] : "";
+}
+
+function resetScan() {
+  stopScanCamera();
+  $("#scan-video").classList.add("hidden");
+  $("#scan-captured-img").classList.add("hidden");
+  $("#scan-placeholder").classList.remove("hidden");
+  $("#scan-start-btn").classList.remove("hidden");
+  $("#scan-capture-btn").classList.add("hidden");
+  $("#scan-retry-btn").classList.add("hidden");
+  $("#scan-name-row").classList.add("hidden");
+  $("#scan-name-input").value = "";
+  $("#scan-status").textContent = "";
+  $("#scan-search-status").textContent = "";
+  $("#scan-results").innerHTML = "";
+  $("#scan-queue").classList.add("hidden");
+  $("#scan-queue").innerHTML = "";
+  $("#scan-review").classList.add("hidden");
+  $("#auto-scan-start-btn").classList.remove("hidden");
+  $("#auto-scan-stop-btn").classList.add("hidden");
+}
+
+// ============================================================
+// AUTO-SCAN (Serienerfassung per Bewegungserkennung)
+// ============================================================
+let autoScanQueue = []; // {id, thumb, guess, matched, quantity, status}
+let motionInterval = null;
+let motionSmallCanvas = document.createElement("canvas");
+motionSmallCanvas.width = 48;
+motionSmallCanvas.height = 48;
+let lastSmallFrameData = null;
+let stillFrameCount = 0;
+let capturedForCurrentObject = false;
+let ocrChain = Promise.resolve(); // serialisiert OCR-Aufrufe (ein Worker kann nur 1 gleichzeitig)
+
+const STILL_THRESHOLD = 6; // Grauwert-Differenz unterhalb: "ruhig"
+const MOVE_THRESHOLD = 14; // oberhalb: "in Bewegung" (Hysterese gegen Flackern)
+const REQUIRED_STILL_TICKS = 3; // ~3 x 350ms = guten 1 Sek. Ruhe nötig vor Auslösen
+const MOTION_TICK_MS = 350;
+
+$("#auto-scan-start-btn").addEventListener("click", startAutoScan);
+$("#auto-scan-stop-btn").addEventListener("click", stopAutoScanAndReview);
+$("#scan-review-save-btn").addEventListener("click", saveAutoScanQueue);
+$("#scan-review-discard-btn").addEventListener("click", () => {
+  autoScanQueue = [];
+  $("#scan-review").classList.add("hidden");
+  resetScan();
+});
+
+async function startAutoScan() {
+  autoScanQueue = [];
+  lastSmallFrameData = null;
+  stillFrameCount = 0;
+  capturedForCurrentObject = false;
+  renderScanQueue();
+
+  const stream = await startScanCamera();
+  if (!stream) return;
+
+  $("#auto-scan-start-btn").classList.add("hidden");
+  $("#auto-scan-stop-btn").classList.remove("hidden");
+  $("#scan-capture-btn").classList.add("hidden"); // Auto-Scan löst selbst aus
+  $("#scan-queue").classList.remove("hidden");
+  $("#scan-status").textContent = "Auto-Scan läuft – Karten nacheinander in den Kamerabereich legen.";
+
+  await getOcrWorker(); // Erkennung im Hintergrund vorladen
+
+  motionInterval = setInterval(checkMotionTick, MOTION_TICK_MS);
+}
+
+function stopAutoScan() {
+  if (motionInterval) {
+    clearInterval(motionInterval);
+    motionInterval = null;
+  }
+  stopScanCamera();
+  $("#scan-motion-badge").classList.add("hidden");
+}
+
+function stopAutoScanAndReview() {
+  stopAutoScan();
+  $("#scan-video").classList.add("hidden");
+  $("#scan-placeholder").classList.remove("hidden");
+  $("#auto-scan-start-btn").classList.remove("hidden");
+  $("#auto-scan-stop-btn").classList.add("hidden");
+  showScanReview();
+}
+
+function checkMotionTick() {
+  const video = $("#scan-video");
+  if (!video.videoWidth) return;
+
+  const ctx = motionSmallCanvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(video, 0, 0, motionSmallCanvas.width, motionSmallCanvas.height);
+  const frame = ctx.getImageData(0, 0, motionSmallCanvas.width, motionSmallCanvas.height).data;
+
+  if (lastSmallFrameData) {
+    let diffSum = 0;
+    const pixelCount = frame.length / 4;
+    for (let i = 0; i < frame.length; i += 4) {
+      const gray1 = (frame[i] + frame[i + 1] + frame[i + 2]) / 3;
+      const gray2 = (lastSmallFrameData[i] + lastSmallFrameData[i + 1] + lastSmallFrameData[i + 2]) / 3;
+      diffSum += Math.abs(gray1 - gray2);
+    }
+    const avgDiff = diffSum / pixelCount;
+
+    if (avgDiff > MOVE_THRESHOLD) {
+      stillFrameCount = 0;
+      capturedForCurrentObject = false;
+      $("#scan-motion-badge").classList.add("hidden");
+    } else if (avgDiff < STILL_THRESHOLD) {
+      stillFrameCount++;
+      if (stillFrameCount >= REQUIRED_STILL_TICKS && !capturedForCurrentObject) {
+        capturedForCurrentObject = true;
+        $("#scan-motion-badge").classList.add("hidden");
+        captureForAutoScan();
+      } else if (!capturedForCurrentObject) {
+        $("#scan-motion-badge").classList.remove("hidden");
+      }
+    }
+  }
+  lastSmallFrameData = frame;
+}
+
+function captureForAutoScan() {
+  const video = $("#scan-video");
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  canvas.getContext("2d").drawImage(video, 0, 0);
+  const thumb = canvas.toDataURL("image/jpeg", 0.75);
+
+  const item = {
+    id: "s" + Date.now() + Math.random().toString(36).slice(2, 7),
+    thumb,
+    guess: "",
+    matched: null,
+    quantity: 1,
+    status: "ocr",
+  };
+  autoScanQueue.push(item);
+  renderScanQueue();
+
+  ocrChain = ocrChain.then(() => processAutoScanItem(item, canvas)).catch(() => {});
+}
+
+async function processAutoScanItem(item, canvas) {
+  try {
+    const worker = await getOcrWorker();
+    const {
+      data: { text },
+    } = await worker.recognize(canvas);
+    item.guess = extractLikelyCardName(text);
+    item.status = "searching";
+    renderScanQueue();
+
+    if (item.guess) {
+      const match = await searchTopCandidate(item.guess);
+      if (match) {
+        // Wurde dieselbe Karte gerade schon gescannt? Dann Anzahl statt neuer Zeile erhöhen.
+        const existing = autoScanQueue.find((q) => q.id !== item.id && q.matched && q.matched.id === match.id);
+        if (existing) {
+          existing.quantity++;
+          autoScanQueue = autoScanQueue.filter((q) => q.id !== item.id);
+          renderScanQueue();
+          return;
+        }
+        item.matched = match;
+        item.status = "matched";
+      } else {
+        item.status = "nomatch";
+      }
+    } else {
+      item.status = "nomatch";
+    }
+  } catch (err) {
+    item.status = "error";
+  }
+  renderScanQueue();
+}
+
+// Liefert den wahrscheinlichsten Treffer für einen (evtl. unscharfen) OCR-Namen.
+async function searchTopCandidate(query) {
+  const [deResults, enResults] = await Promise.all([fetchYgo(query, "de"), fetchYgo(query, "en")]);
+  const all = [...deResults, ...enResults];
+  if (all.length === 0) return null;
+
+  const qLower = query.trim().toLowerCase();
+  const exact = all.find((c) => c.name.toLowerCase() === qLower);
+  const best = exact || all[0];
+
+  const enMatch = enResults.find((c) => c.id === best.id) || (best.id ? enResults[0] : null);
+  const deMatch = deResults.find((c) => c.id === best.id);
+  const canonical = enMatch || best;
+
+  return {
+    id: canonical.id,
+    name_en: enMatch ? enMatch.name : canonical.name,
+    name_de: deMatch ? deMatch.name : null,
+    type: canonical.type,
+    race: canonical.race,
+    attribute: canonical.attribute,
+    atk: canonical.atk,
+    def: canonical.def,
+    level: canonical.level ?? canonical.linkval,
+    archetype: canonical.archetype || null,
+    scale: canonical.scale ?? null,
+    desc_de: deMatch ? deMatch.desc : null,
+    desc_en: enMatch ? enMatch.desc : canonical.desc,
+    image: canonical.card_images && canonical.card_images[0] ? canonical.card_images[0].image_url : "",
+  };
+}
+
+function renderScanQueue() {
+  $("#auto-scan-count").textContent = autoScanQueue.length;
+  const container = $("#scan-queue");
+  container.innerHTML = "";
+  autoScanQueue.forEach((item) => {
+    const el = document.createElement("div");
+    el.className = "scan-queue-item";
+    const img = item.matched ? item.matched.image : item.thumb;
+    let statusHtml = "";
+    if (item.status === "ocr" || item.status === "searching") statusHtml = `<div class="status-badge">⏳</div>`;
+    else if (item.status === "nomatch") statusHtml = `<div class="status-badge">❓</div>`;
+    else if (item.status === "error") statusHtml = `<div class="status-badge">⚠️</div>`;
+    el.innerHTML = `
+      <img src="${img}" alt="" />
+      ${item.quantity > 1 ? `<span class="qty-badge">×${item.quantity}</span>` : ""}
+      ${statusHtml}
+    `;
+    container.appendChild(el);
+  });
+}
+
+// ============================================================
+// REVIEW-BILDSCHIRM NACH EINEM AUTO-SCAN-LAUF
+// ============================================================
+function showScanReview() {
+  $("#scan-queue").classList.add("hidden");
+  $("#scan-review").classList.remove("hidden");
+  renderScanReview();
+}
+
+function renderScanReview() {
+  $("#scan-review-count").textContent = autoScanQueue.length;
+  const list = $("#scan-review-list");
+  list.innerHTML = "";
+
+  if (autoScanQueue.length === 0) {
+    list.innerHTML = `<div class="empty-state">Keine Karten erfasst.</div>`;
+    return;
+  }
+
+  autoScanQueue.forEach((item) => {
+    const row = document.createElement("div");
+    row.className = "scan-review-row";
+    const img = item.matched ? item.matched.image : item.thumb;
+    const nameVal = item.matched ? item.matched.name_de || item.matched.name_en : item.guess;
+    const metaText = item.matched
+      ? [item.matched.card_type, item.matched.attribute].filter(Boolean).join(" · ")
+      : item.status === "nomatch"
+      ? "Keine automatische Zuordnung gefunden – Name prüfen und erneut suchen"
+      : "Wird erkannt …";
+
+    row.innerHTML = `
+      <img src="${img}" alt="" />
+      <div class="review-main">
+        <input type="text" class="review-name-input" value="${nameVal || ""}" placeholder="Kartenname …" />
+        <span class="review-meta">${metaText}</span>
+      </div>
+      <input type="number" class="review-qty" min="1" max="99" value="${item.quantity}" />
+      <button class="icon-btn" data-action="research" title="Erneut suchen">🔍</button>
+      <button class="icon-btn danger" data-action="remove" title="Entfernen">🗑</button>
+    `;
+
+    row.querySelector(".review-qty").addEventListener("change", (e) => {
+      item.quantity = parseInt(e.target.value, 10) || 1;
+    });
+    row.querySelector('[data-action="remove"]').addEventListener("click", () => {
+      autoScanQueue = autoScanQueue.filter((q) => q.id !== item.id);
+      renderScanReview();
+    });
+    row.querySelector('[data-action="research"]').addEventListener("click", async () => {
+      const newName = row.querySelector(".review-name-input").value.trim();
+      if (!newName) return;
+      row.querySelector(".review-meta").textContent = "Suche …";
+      const match = await searchTopCandidate(newName);
+      if (match) {
+        item.matched = match;
+        item.status = "matched";
+      } else {
+        item.matched = null;
+        item.status = "nomatch";
+      }
+      renderScanReview();
+    });
+
+    list.appendChild(row);
+  });
+}
+
+async function saveAutoScanQueue() {
+  if (!currentSession) return;
+  const validItems = autoScanQueue.filter((item) => item.matched);
+  if (validItems.length === 0) {
+    showToast("Keine zugeordneten Karten zum Speichern.");
+    return;
+  }
+
+  $("#scan-review-save-btn").disabled = true;
+  $("#scan-review-save-btn").textContent = "Speichere …";
+
+  const rows = validItems.map((item) => ({
+    owner_id: currentSession.user.id,
+    ygo_id: item.matched.id,
+    name_de: item.matched.name_de,
+    name_en: item.matched.name_en,
+    card_type: item.matched.type,
+    attribute: item.matched.attribute,
+    race: item.matched.race,
+    atk: item.matched.atk,
+    def: item.matched.def,
+    level: item.matched.level,
+    image_url: item.matched.image,
+    quantity: item.quantity,
+    effect_text_de: item.matched.desc_de || null,
+    effect_text_en: item.matched.desc_en || null,
+    archetype: item.matched.archetype || null,
+    scale: item.matched.scale ?? null,
+  }));
+
+  const { error } = await supabaseClient.from("cards").insert(rows);
+
+  $("#scan-review-save-btn").disabled = false;
+  $("#scan-review-save-btn").textContent = "Alle bestätigen & speichern";
+
+  if (error) {
+    showToast("Fehler beim Speichern: " + error.message);
+    return;
+  }
+
+  const totalQty = validItems.reduce((sum, i) => sum + i.quantity, 0);
+  showToast(`${validItems.length} Karten (${totalQty}× insgesamt) gespeichert`);
+  logHistory("import", `Auto-Scan: ${validItems.length} Karten hinzugefügt`, {});
+
+  autoScanQueue = [];
+  $("#scan-review").classList.add("hidden");
+  resetScan();
+  renderMineList();
+  renderAllList();
+}
+
+// ============================================================
+// SERVICE WORKER (Installierbarkeit als App)
+// ============================================================
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("service-worker.js").catch(() => {});
+  });
 }
 
 // ============================================================

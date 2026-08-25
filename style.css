@@ -36,6 +36,8 @@ html, body {
   color: var(--text);
   font-family: var(--font-body);
   min-height: 100vh;
+  -webkit-tap-highlight-color: transparent;
+  overscroll-behavior-y: contain;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -52,7 +54,40 @@ html, body {
   background:
     radial-gradient(ellipse 900px 500px at 15% -5%, rgba(124, 92, 191, 0.16), transparent 60%),
     radial-gradient(ellipse 700px 500px at 100% 10%, rgba(201, 162, 39, 0.10), transparent 60%),
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='%23c9a227' stroke-width='1' opacity='0.05'%3E%3Cpath d='M70 30a14 14 0 1 0 0.1 0M70 44v46M52 68h36'/%3E%3Cpath d='M20 100l10-14h10l10 14M90 100l10-14h10l10 14' /%3E%3C/g%3E%3C/svg%3E"),
     var(--bg);
+  background-repeat: no-repeat, no-repeat, repeat, no-repeat;
+}
+
+/* Fries-Ornament (Zick-Zack-Linie), Signature-Element für Trennlinien */
+.frieze-rule {
+  height: 7px;
+  margin: 0.9rem auto;
+  width: 88px;
+  background-image: repeating-linear-gradient(
+    45deg, var(--gold) 0, var(--gold) 3px, transparent 3px, transparent 7px
+  );
+  opacity: 0.55;
+  clip-path: polygon(0 50%, 8% 0, 16% 50%, 24% 0, 32% 50%, 40% 0, 48% 50%, 56% 0, 64% 50%, 72% 0, 80% 50%, 88% 0, 96% 50%, 100% 20%, 100% 100%, 0 100%);
+}
+.frieze-rule-wide { width: 100%; max-width: 220px; }
+.frieze-rule-left { margin: 0.7rem 0 1rem; }
+
+/* Foil-Schimmer-Text (Signature-Typografie-Effekt, wie Holo-Rarität auf Karten) */
+.foil-text {
+  background: linear-gradient(110deg, var(--gold) 10%, var(--gold-soft) 30%, #fff3cf 45%, var(--violet-soft) 58%, var(--gold) 80%);
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: foilShift 7s ease-in-out infinite;
+}
+@keyframes foilShift {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .foil-text { animation: none; background-position: 30% 50%; }
 }
 
 a { color: var(--gold-soft); }
@@ -73,12 +108,24 @@ a { color: var(--gold-soft); }
 .btn:active { transform: scale(0.98); }
 
 .btn-primary {
+  position: relative;
+  overflow: hidden;
   background: linear-gradient(135deg, var(--gold-soft), var(--gold));
   color: #1a1406;
   box-shadow: 0 4px 20px rgba(201, 162, 39, 0.25);
 }
+.btn-primary::after {
+  content: "";
+  position: absolute; top: 0; left: -60%;
+  width: 40%; height: 100%;
+  background: linear-gradient(115deg, transparent, rgba(255,255,255,0.55), transparent);
+  transform: skewX(-20deg);
+  transition: left 0.5s ease;
+}
+.btn-primary:hover::after { left: 130%; }
 .btn-primary:hover { filter: brightness(1.08); box-shadow: 0 6px 24px rgba(201, 162, 39, 0.4); }
 .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; filter: none; }
+.btn-primary:disabled::after { display: none; }
 
 .btn-ghost {
   background: transparent;
@@ -128,24 +175,27 @@ input:focus, select:focus {
   padding: 2.25rem 2rem;
   text-align: center;
   box-shadow: 0 30px 60px rgba(0,0,0,0.4);
+  position: relative;
 }
-.auth-emblem {
-  font-size: 2rem;
-  color: var(--gold);
-  margin-bottom: 0.5rem;
+.auth-card::before {
+  content: "";
+  position: absolute; top: 0; left: 12%; right: 12%; height: 3px;
+  background: linear-gradient(90deg, transparent, var(--gold), transparent);
+  opacity: 0.7;
 }
+.emblem-svg { display: block; }
+.emblem-lg { width: 56px; height: 56px; margin: 0 auto; filter: drop-shadow(0 0 10px rgba(201,162,39,0.25)); }
+.emblem-sm { width: 26px; height: 26px; }
+.auth-emblem { margin-bottom: 0.25rem; }
 .auth-title {
   font-family: var(--font-display);
-  font-size: 1.6rem;
+  font-size: 1.7rem;
   font-weight: 600;
-  letter-spacing: 0.03em;
-  margin: 0;
-  background: linear-gradient(135deg, var(--gold-soft), var(--violet-soft));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: 0.6rem 0 0;
 }
-.auth-sub { color: var(--text-muted); font-size: 0.88rem; margin-top: 0.35rem; margin-bottom: 1.5rem; }
+.auth-sub { color: var(--text-muted); font-size: 0.86rem; margin-top: 0.4rem; margin-bottom: 1.5rem; font-style: italic; }
 
 .auth-tabs {
   display: flex;
@@ -203,13 +253,20 @@ input:focus, select:focus {
   z-index: 10;
   flex-wrap: wrap;
 }
-.brand { display: flex; align-items: center; gap: 0.5rem; }
-.brand-emblem { color: var(--gold); font-size: 1.3rem; }
+.topbar::after {
+  content: "";
+  position: absolute; left: 0; right: 0; bottom: -3px; height: 3px;
+  background: repeating-linear-gradient(90deg, var(--gold) 0 10px, transparent 10px 20px);
+  opacity: 0.35;
+  pointer-events: none;
+}
+.brand { display: flex; align-items: center; gap: 0.6rem; }
 .brand-name {
   font-family: var(--font-display);
   font-weight: 600;
-  font-size: 1.15rem;
-  letter-spacing: 0.03em;
+  font-size: 1.2rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
 }
 
 .tabs { display: flex; gap: 0.4rem; background: var(--panel); padding: 4px; border-radius: 10px; }
@@ -359,8 +416,8 @@ input:focus, select:focus {
   color: var(--text-muted); width: 32px; height: 32px; border-radius: 50%;
   cursor: pointer; font-size: 0.9rem; z-index: 2;
 }
-.modal-body { display: flex; gap: 1.25rem; padding: 1.5rem; flex-wrap: wrap; }
-.modal-img { width: 160px; border-radius: 10px; flex-shrink: 0; background: var(--bg-alt); margin: 0 auto; }
+.modal-body { display: flex; gap: 1.25rem; padding: 1.5rem; flex-wrap: wrap; align-items: flex-start; }
+.modal-img { width: 160px; aspect-ratio: 59 / 86; object-fit: cover; border-radius: 10px; flex-shrink: 0; background: var(--bg-alt); margin: 0 auto; }
 .modal-info { flex: 1; min-width: 220px; }
 .modal-type-badge {
   display: inline-block; font-family: var(--font-mono); font-size: 0.7rem;
@@ -451,6 +508,87 @@ input:focus, select:focus {
 }
 
 /* ============================================================
+   SCAN (Kamera + OCR)
+   ============================================================ */
+.scan-panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 1.5rem;
+  max-width: 480px;
+  margin: 0 auto 1.5rem;
+}
+.scan-intro { color: var(--text-muted); font-size: 0.83rem; line-height: 1.55; margin: 0 0 1.1rem; }
+
+.scan-camera-wrap {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background: var(--bg-alt);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.scan-camera-wrap video,
+.scan-camera-wrap img {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+}
+.scan-placeholder { font-size: 2.5rem; opacity: 0.3; }
+.scan-motion-badge {
+  position: absolute; bottom: 0.7rem; left: 50%; transform: translateX(-50%);
+  background: rgba(62, 142, 107, 0.9); color: white; font-size: 0.72rem; font-weight: 700;
+  padding: 0.35rem 0.8rem; border-radius: 20px; white-space: nowrap;
+  animation: fadeUp 0.15s ease;
+}
+
+.scan-mode-toggle { margin-bottom: 1.1rem; width: 100%; }
+.scan-mode-toggle .lang-btn { flex: 1; padding: 0.65rem; font-family: var(--font-body); }
+
+.scan-actions { display: flex; gap: 0.6rem; margin-top: 1rem; flex-wrap: wrap; }
+.scan-status { font-size: 0.82rem; color: var(--text-muted); margin: 0.75rem 0 0; min-height: 1.1em; }
+
+.scan-name-row { margin-top: 1rem; display: flex; gap: 0.6rem; align-items: flex-end; flex-wrap: wrap; }
+.scan-name-row label { flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.78rem; color: var(--text-muted); }
+
+/* Live-Warteschlange während des Auto-Scans */
+.scan-queue {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
+  gap: 0.5rem; margin-top: 1.1rem; max-height: 260px; overflow-y: auto;
+}
+.scan-queue-item { position: relative; border-radius: 8px; overflow: hidden; background: var(--bg-alt); aspect-ratio: 59/86; }
+.scan-queue-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.scan-queue-item .qty-badge {
+  position: absolute; top: 3px; right: 3px; background: var(--gold); color: #1a1406;
+  font-family: var(--font-mono); font-weight: 700; font-size: 0.65rem;
+  border-radius: 20px; padding: 0.05rem 0.4rem;
+}
+.scan-queue-item .status-badge {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  background: rgba(11,14,26,0.55); font-size: 0.9rem;
+}
+
+/* Review-Bildschirm */
+.scan-review { max-width: 720px; margin: 1.5rem auto 0; }
+.scan-review-title { font-family: var(--font-display); font-size: 1.1rem; margin: 0 0 0.3rem; }
+.scan-review-hint { color: var(--text-muted); font-size: 0.8rem; margin: 0 0 1rem; }
+.scan-review-list { display: flex; flex-direction: column; gap: 0.55rem; margin-bottom: 1.2rem; }
+.scan-review-row {
+  display: flex; align-items: center; gap: 0.75rem;
+  background: var(--panel); border: 1px solid var(--panel-border); border-radius: 9px; padding: 0.6rem 0.8rem;
+}
+.scan-review-row img { width: 42px; height: 61px; object-fit: cover; border-radius: 4px; flex-shrink: 0; background: var(--bg-alt); }
+.scan-review-row .review-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.3rem; }
+.scan-review-row .review-name-input { font-size: 0.85rem; padding: 0.4rem 0.6rem; }
+.scan-review-row .review-meta { font-size: 0.72rem; color: var(--text-muted); }
+.scan-review-row .review-qty { width: 58px; text-align: center; }
+.scan-review-actions { display: flex; gap: 0.6rem; }
+
+/* ============================================================
    TOAST
    ============================================================ */
 .toast {
@@ -466,8 +604,15 @@ input:focus, select:focus {
    ============================================================ */
 @media (max-width: 640px) {
   .topbar { flex-direction: column; align-items: stretch; }
-  .tabs { justify-content: space-between; }
+  .tabs {
+    justify-content: flex-start;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex: 0 0 auto; }
   .user-chip { justify-content: space-between; }
   .modal-body { flex-direction: column; }
-  .modal-img { width: 100%; max-width: 200px; }
+  .modal-img { width: 100%; max-width: 200px; aspect-ratio: 59 / 86; }
 }

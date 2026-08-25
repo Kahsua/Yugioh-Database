@@ -2,8 +2,19 @@
 <html lang="de">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 <title>Kartenarchiv</title>
+
+<!-- PWA / Installation als App -->
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#0b0e1a" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Kartenarchiv" />
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+<link rel="icon" href="icons/icon-192.png" />
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css" />
@@ -15,8 +26,22 @@
 <!-- ===================== AUTH SCREEN ===================== -->
 <div id="auth-screen" class="auth-screen">
   <div class="auth-card">
-    <div class="auth-emblem">☥</div>
-    <h1 class="auth-title">Kartenarchiv</h1>
+    <div class="auth-emblem">
+      <svg class="emblem-svg emblem-lg" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="goldGradAuth" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#e0c15c"/>
+            <stop offset="100%" stop-color="#c9a227"/>
+          </linearGradient>
+        </defs>
+        <path d="M50 8 L14 86 L86 86 Z" fill="none" stroke="url(#goldGradAuth)" stroke-width="2.8" stroke-linejoin="round"/>
+        <path d="M27 46 Q50 31 73 46" fill="none" stroke="url(#goldGradAuth)" stroke-width="2.3" stroke-linecap="round"/>
+        <path d="M27 54 Q50 69 73 54" fill="none" stroke="url(#goldGradAuth)" stroke-width="2.3" stroke-linecap="round"/>
+        <circle cx="50" cy="50" r="4.2" fill="url(#goldGradAuth)"/>
+      </svg>
+    </div>
+    <div class="frieze-rule"></div>
+    <h1 class="auth-title foil-text">Kartenarchiv</h1>
     <p class="auth-sub">Eure gemeinsame Yu-Gi-Oh-Sammlung</p>
 
     <div class="auth-tabs">
@@ -61,11 +86,23 @@
 
   <header class="topbar">
     <div class="brand">
-      <span class="brand-emblem">☥</span>
-      <span class="brand-name">Kartenarchiv</span>
+      <svg class="emblem-svg emblem-sm" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="goldGradTop" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stop-color="#e0c15c"/>
+            <stop offset="100%" stop-color="#c9a227"/>
+          </linearGradient>
+        </defs>
+        <path d="M50 8 L14 86 L86 86 Z" fill="none" stroke="url(#goldGradTop)" stroke-width="4.5" stroke-linejoin="round"/>
+        <path d="M27 46 Q50 31 73 46" fill="none" stroke="url(#goldGradTop)" stroke-width="4" stroke-linecap="round"/>
+        <path d="M27 54 Q50 69 73 54" fill="none" stroke="url(#goldGradTop)" stroke-width="4" stroke-linecap="round"/>
+        <circle cx="50" cy="50" r="7" fill="url(#goldGradTop)"/>
+      </svg>
+      <span class="brand-name foil-text">Kartenarchiv</span>
     </div>
     <nav class="tabs">
-      <button class="tab active" data-view="collect">Karte hinzufügen</button>
+      <button class="tab active" data-view="collect">Suchen</button>
+      <button class="tab" data-view="scan">📷 Scannen</button>
       <button class="tab" data-view="mine">Meine Sammlung</button>
       <button class="tab" data-view="all">Alle Sammlungen</button>
       <button class="tab" data-view="history">Verlauf</button>
@@ -92,6 +129,76 @@
 
     <div id="search-status" class="search-status"></div>
     <div id="search-results" class="results-grid"></div>
+  </section>
+
+  <!-- ===================== VIEW: SCANNEN (Kamera + OCR) ===================== -->
+  <section id="view-scan" class="view">
+    <div class="scan-panel">
+      <div class="lang-toggle scan-mode-toggle" id="scan-mode-toggle">
+        <button class="lang-btn active" data-mode="single">Einzelbild</button>
+        <button class="lang-btn" data-mode="auto">Auto-Scan (Serie)</button>
+      </div>
+
+      <p class="scan-intro" id="scan-intro-single">
+        Karte vor die Kamera halten (guter Lichteinfall, Name gut lesbar),
+        Foto aufnehmen – der Kartenname wird automatisch erkannt und gesucht.
+        Erkennung ist nicht immer perfekt, du kannst den Text vor der Suche korrigieren.
+      </p>
+      <p class="scan-intro hidden" id="scan-intro-auto">
+        Handy fest positionieren (z.B. Kartenschacht/Ständer), Auto-Scan starten,
+        dann Karten nacheinander in den Kamerabereich fallen lassen. Sobald eine
+        Karte kurz ruhig liegt, wird sie automatisch fotografiert und erkannt.
+        Am Ende prüfst du alle erkannten Karten, bevor sie gespeichert werden.
+      </p>
+
+      <div class="scan-camera-wrap" id="scan-camera-wrap">
+        <video id="scan-video" class="hidden" autoplay playsinline muted></video>
+        <img id="scan-captured-img" class="hidden" alt="Aufgenommenes Foto" />
+        <div class="scan-placeholder" id="scan-placeholder">📷</div>
+        <div class="scan-motion-badge hidden" id="scan-motion-badge">Bereich ruhig – erfasse …</div>
+      </div>
+      <canvas id="scan-canvas" class="hidden"></canvas>
+
+      <!-- Einzelbild-Modus -->
+      <div class="scan-actions" id="scan-single-actions">
+        <button id="scan-start-btn" class="btn btn-primary">Kamera starten</button>
+        <button id="scan-capture-btn" class="btn btn-primary hidden">Foto aufnehmen</button>
+        <button id="scan-retry-btn" class="btn-ghost hidden">Erneut versuchen</button>
+      </div>
+
+      <!-- Auto-Scan-Modus -->
+      <div class="scan-actions hidden" id="scan-auto-actions">
+        <button id="auto-scan-start-btn" class="btn btn-primary">Auto-Scan starten</button>
+        <button id="auto-scan-stop-btn" class="btn-ghost hidden">Scan-Lauf beenden (<span id="auto-scan-count">0</span>)</button>
+      </div>
+
+      <p class="scan-status" id="scan-status"></p>
+
+      <div class="scan-name-row hidden" id="scan-name-row">
+        <label>Erkannter Kartenname (bei Bedarf korrigieren)
+          <input type="text" id="scan-name-input" placeholder="Kartenname …" />
+        </label>
+        <button id="scan-search-btn" class="btn btn-primary">Suchen</button>
+      </div>
+
+      <!-- Live-Warteschlange während eines Auto-Scan-Laufs -->
+      <div class="scan-queue hidden" id="scan-queue"></div>
+    </div>
+
+    <div id="scan-search-status" class="search-status"></div>
+    <div id="scan-results" class="results-grid"></div>
+
+    <!-- Review-Bildschirm nach Ende eines Auto-Scan-Laufs -->
+    <div class="scan-review hidden" id="scan-review">
+      <h3 class="scan-review-title">Scan-Ergebnisse prüfen (<span id="scan-review-count">0</span>)</h3>
+      <div class="frieze-rule frieze-rule-left"></div>
+      <p class="scan-review-hint">Prüfe jede Karte, korrigiere ggf. den Namen und die Anzahl, entferne Fehlscans, dann speichern.</p>
+      <div id="scan-review-list" class="scan-review-list"></div>
+      <div class="scan-review-actions">
+        <button id="scan-review-save-btn" class="btn btn-primary">Alle bestätigen &amp; speichern</button>
+        <button id="scan-review-discard-btn" class="btn-ghost">Alles verwerfen</button>
+      </div>
+    </div>
   </section>
 
   <!-- ===================== VIEW: MEINE SAMMLUNG ===================== -->
@@ -150,6 +257,7 @@
   <section id="view-import" class="view">
     <div class="import-panel">
       <h2 class="import-title">Bestehende Sammlung importieren</h2>
+      <div class="frieze-rule frieze-rule-left"></div>
       <p class="import-desc">
         Lade eine CSV-Datei mit den Spalten <code>Deutsch, Englisch, Kartenart, Kartentyp,
         Eigenschaft, Typ, Stufe_Rang_Link, ATK, DEF, Anzahl</code> hoch. Jede Karte wird per
@@ -246,6 +354,7 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
 </body>
