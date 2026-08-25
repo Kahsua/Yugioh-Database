@@ -199,6 +199,7 @@ $all(".tab").forEach((tab) => {
     if (view === "mine") renderMineList();
     if (view === "all") renderAllList();
     if (view === "history") renderHistory();
+    if (view === "scan") ensureCardDbLoaded();
   });
 });
 
@@ -1062,7 +1063,7 @@ $("#scan-retry-btn").addEventListener("click", resetScan);
 $("#scan-capture-btn").addEventListener("click", captureAndRecognize);
 $("#scan-search-btn").addEventListener("click", () => {
   const q = $("#scan-name-input").value.trim();
-  if (q.length >= 2) runSearch(q, "#scan-search-status", "#scan-results");
+  if (q.length >= 2) fuzzySearchAndRender(q, "#scan-results", "#scan-search-status");
 });
 $("#scan-name-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("#scan-search-btn").click();
@@ -1271,8 +1272,8 @@ async function captureAndRecognize() {
     $("#scan-name-input").value = guess;
 
     if (guess) {
-      $("#scan-status").textContent = "Text erkannt – bitte prüfen und ggf. korrigieren:";
-      runSearch(guess, "#scan-search-status", "#scan-results");
+      $("#scan-status").textContent = "Text erkannt – bitte prüfen und die richtige Karte auswählen:";
+      fuzzySearchAndRender(guess, "#scan-results", "#scan-search-status");
     } else {
       $("#scan-status").textContent = "Kein eindeutiger Text erkannt. Bitte Namen manuell eingeben.";
     }
@@ -1463,7 +1464,7 @@ async function processAutoScanItem(item, cardCanvas) {
     renderScanQueue();
 
     if (item.guess) {
-      const match = await searchTopCandidate(item.guess);
+      const match = await fuzzyTopMatch(item.guess);
       if (match) {
         // Wurde dieselbe Karte gerade schon gescannt? Dann Anzahl statt neuer Zeile erhöhen.
         const existing = autoScanQueue.find((q) => q.id !== item.id && q.matched && q.matched.id === match.id);
@@ -1488,6 +1489,7 @@ async function processAutoScanItem(item, cardCanvas) {
 }
 
 // Liefert den wahrscheinlichsten Treffer für einen (evtl. unscharfen) OCR-Namen.
+// (Wird als Fallback genutzt, falls die lokale Kartendatenbank noch nicht geladen ist.)
 async function searchTopCandidate(query) {
   const [deResults, enResults] = await Promise.all([fetchYgo(query, "de"), fetchYgo(query, "en")]);
   const all = [...deResults, ...enResults];
@@ -1517,6 +1519,133 @@ async function searchTopCandidate(query) {
     desc_en: enMatch ? enMatch.desc : canonical.desc,
     image: canonical.card_images && canonical.card_images[0] ? canonical.card_images[0].image_url : "",
   };
+}
+
+// ============================================================
+// UNSCHARFER (TIPPFEHLER-TOLERANTER) ABGLEICH GEGEN DIE GESAMTE
+// KARTENDATENBANK - deutlich robuster für OCR-Ergebnisse als eine exakte
+// API-Suche, weil erkannter Text fast nie 100% korrekt ist.
+// ============================================================
+let cardDbEn = null;
+let cardDbDe = null;
+let cardDbEnById = null;
+let cardDbDeById = null;
+let cardDbLoadPromise = null;
+
+function ensureCardDbLoaded() {
+  if (cardDbEn && cardDbDe) return Promise.resolve();
+  if (cardDbLoadPromise) return cardDbLoadPromise;
+
+  cardDbLoadPromise = (async () => {
+    const [en, de] = await Promise.all([fetchFullYgoDatabase("en"), fetchFullYgoDatabase("de")]);
+    cardDbEn = en;
+    cardDbDe = de;
+    cardDbEnById = new Map(en.map((c) => [c.id, c]));
+    cardDbDeById = new Map(de.map((c) => [c.id, c]));
+  })();
+  return cardDbLoadPromise;
+}
+
+// Klassische Levenshtein-Distanz (Anzahl Einfüge-/Lösch-/Ersetz-Operationen).
+function levenshtein(a, b) {
+  const al = a.length,
+    bl = b.length;
+  if (al === 0) return bl;
+  if (bl === 0) return al;
+  const dp = new Array(bl + 1);
+  for (let j = 0; j <= bl; j++) dp[j] = j;
+  for (let i = 1; i <= al; i++) {
+    let prev = dp[0];
+    dp[0] = i;
+    for (let j = 1; j <= bl; j++) {
+      const tmp = dp[j];
+      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
+      prev = tmp;
+    }
+  }
+  return dp[bl];
+}
+
+// Ähnlichkeit 0..1 (1 = identisch). Teilstring-Treffer bekommen einen Bonus,
+// damit auch nur teilweise erkannter Text (abgeschnittene Zeile o.ä.) gut abschneidet.
+function nameSimilarity(query, name) {
+  const q = query.toLowerCase().trim();
+  const n = name.toLowerCase().trim();
+  if (!q || !n) return 0;
+  const dist = levenshtein(q, n);
+  let score = 1 - dist / Math.max(q.length, n.length, 1);
+  if (n.includes(q) || q.includes(n)) score = Math.max(score, 0.72);
+  return score;
+}
+
+function buildMergedCardById(id) {
+  const en = cardDbEnById.get(id);
+  const de = cardDbDeById.get(id);
+  const canonical = en || de;
+  if (!canonical) return null;
+  return {
+    id: canonical.id,
+    name_en: en ? en.name : canonical.name,
+    name_de: de ? de.name : null,
+    type: canonical.type,
+    race: canonical.race,
+    attribute: canonical.attribute,
+    atk: canonical.atk,
+    def: canonical.def,
+    level: canonical.level ?? canonical.linkval,
+    archetype: canonical.archetype || null,
+    scale: canonical.scale ?? null,
+    desc_de: de ? de.desc : null,
+    desc_en: en ? en.desc : canonical.desc,
+    image: canonical.card_images && canonical.card_images[0] ? canonical.card_images[0].image_url : "",
+  };
+}
+
+// Findet die besten Kandidaten-IDs für einen (evtl. fehlerhaften) Namen,
+// sortiert nach Ähnlichkeit, über Deutsch UND Englisch hinweg.
+function fuzzyFindCandidateIds(query, limit = 5) {
+  const q = (query || "").trim();
+  if (!q || !cardDbEn || !cardDbDe) return [];
+
+  const bestById = new Map();
+  const consider = (card) => {
+    const score = nameSimilarity(q, card.name);
+    const existing = bestById.get(card.id);
+    if (!existing || score > existing) bestById.set(card.id, score);
+  };
+  cardDbEn.forEach(consider);
+  cardDbDe.forEach(consider);
+
+  return Array.from(bestById.entries())
+    .filter(([, score]) => score > 0.3)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([id]) => id);
+}
+
+// Unscharfe Suche + Anzeige als Ergebnis-Kacheln (nutzt im Hintergrund die
+// lokale Datenbank; lädt sie bei Bedarf einmalig nach).
+async function fuzzySearchAndRender(query, resultsSel, statusSel) {
+  $(statusSel).textContent = "Suche ähnliche Karten …";
+  $(resultsSel).innerHTML = "";
+
+  await ensureCardDbLoaded();
+  const ids = fuzzyFindCandidateIds(query, 6);
+  const cards = ids.map(buildMergedCardById).filter(Boolean);
+
+  if (cards.length === 0) {
+    $(statusSel).textContent = "Keine ähnlichen Karten gefunden. Bitte Namen manuell korrigieren.";
+    return;
+  }
+  $(statusSel).textContent = `${cards.length} mögliche Treffer (nach Ähnlichkeit sortiert) - bitte die richtige Karte auswählen:`;
+  renderSearchResults(cards, resultsSel);
+}
+
+// Bester unscharfer Treffer für den Auto-Scan (ohne Nutzerinteraktion mitten im Lauf).
+async function fuzzyTopMatch(query) {
+  await ensureCardDbLoaded();
+  const ids = fuzzyFindCandidateIds(query, 1);
+  return ids.length > 0 ? buildMergedCardById(ids[0]) : null;
 }
 
 function renderScanQueue() {
@@ -1592,7 +1721,7 @@ function renderScanReview() {
       const newName = row.querySelector(".review-name-input").value.trim();
       if (!newName) return;
       row.querySelector(".review-meta").textContent = "Suche …";
-      const match = await searchTopCandidate(newName);
+      const match = await fuzzyTopMatch(newName);
       if (match) {
         item.matched = match;
         item.status = "matched";
