@@ -539,6 +539,28 @@ input:focus, select:focus {
   object-fit: cover;
 }
 .scan-placeholder { font-size: 2.5rem; opacity: 0.3; }
+.scan-card-guide {
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  width: 74%;
+  aspect-ratio: 59 / 86;
+  border: 2px dashed rgba(201, 162, 39, 0.9);
+  border-radius: 10px;
+  box-shadow: 0 0 0 2000px rgba(6, 7, 14, 0.45);
+  pointer-events: none;
+}
+.scan-card-guide::before {
+  content: "";
+  position: absolute; top: 3%; left: 4%; right: 4%; height: 13%;
+  border: 1.5px dashed rgba(224, 193, 92, 0.75);
+  border-radius: 4px;
+}
+.scan-card-guide::after {
+  content: "Karte hier ausrichten – Name oben";
+  position: absolute; bottom: -1.6rem; left: 50%; transform: translateX(-50%);
+  font-size: 0.68rem; color: var(--gold-soft); white-space: nowrap; font-family: var(--font-mono);
+}
 .scan-motion-badge {
   position: absolute; bottom: 0.7rem; left: 50%; transform: translateX(-50%);
   background: rgba(62, 142, 107, 0.9); color: white; font-size: 0.72rem; font-weight: 700;

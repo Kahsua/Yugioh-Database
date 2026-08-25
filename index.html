@@ -140,21 +140,21 @@
       </div>
 
       <p class="scan-intro" id="scan-intro-single">
-        Karte vor die Kamera halten (guter Lichteinfall, Name gut lesbar),
+        Karte innerhalb des gestrichelten Rahmens ausrichten (guter Lichteinfall, Name gut lesbar),
         Foto aufnehmen – der Kartenname wird automatisch erkannt und gesucht.
         Erkennung ist nicht immer perfekt, du kannst den Text vor der Suche korrigieren.
       </p>
       <p class="scan-intro hidden" id="scan-intro-auto">
-        Handy fest positionieren (z.B. Kartenschacht/Ständer), Auto-Scan starten,
-        dann Karten nacheinander in den Kamerabereich fallen lassen. Sobald eine
-        Karte kurz ruhig liegt, wird sie automatisch fotografiert und erkannt.
-        Am Ende prüfst du alle erkannten Karten, bevor sie gespeichert werden.
+        Handy fest positionieren (z.B. Kartenschacht/Ständer) und so ausrichten, dass Karten
+        innerhalb des gestrichelten Rahmens landen. Auto-Scan starten, dann Karten nacheinander
+        durchfallen lassen. Sobald eine Karte kurz ruhig liegt, wird sie automatisch erfasst.
       </p>
 
       <div class="scan-camera-wrap" id="scan-camera-wrap">
         <video id="scan-video" class="hidden" autoplay playsinline muted></video>
         <img id="scan-captured-img" class="hidden" alt="Aufgenommenes Foto" />
         <div class="scan-placeholder" id="scan-placeholder">📷</div>
+        <div class="scan-card-guide hidden" id="scan-card-guide"></div>
         <div class="scan-motion-badge hidden" id="scan-motion-badge">Bereich ruhig – erfasse …</div>
       </div>
       <canvas id="scan-canvas" class="hidden"></canvas>

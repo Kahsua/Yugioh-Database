@@ -1084,9 +1084,10 @@ async function startScanCamera() {
   video.srcObject = scanStream;
   video.classList.remove("hidden");
   $("#scan-placeholder").classList.add("hidden");
+  $("#scan-card-guide").classList.remove("hidden");
   $("#scan-start-btn").classList.add("hidden");
   $("#scan-capture-btn").classList.remove("hidden");
-  $("#scan-status").textContent = "Kartenname mittig im Bild positionieren, dann Foto aufnehmen.";
+  $("#scan-status").textContent = "Karte im Rahmen ausrichten, dann Foto aufnehmen.";
   return scanStream;
 }
 
@@ -1097,17 +1098,154 @@ function stopScanCamera() {
   }
 }
 
-async function captureAndRecognize() {
-  const video = $("#scan-video");
-  const canvas = $("#scan-canvas");
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext("2d").drawImage(video, 0, 0);
+// ============================================================
+// BILDAUSSCHNITT & VORVERARBEITUNG (für bessere Texterkennung)
+// ============================================================
 
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.92);
-  $("#scan-captured-img").src = dataUrl;
+// Der Kartenname steht bei Yu-Gi-Oh-Karten immer im selben Bereich oben auf
+// der Karte. Statt das ganze Kamerabild (inkl. Hintergrund) zu erkennen,
+// schneiden wir gezielt nur diesen Bereich aus - das ist der größte
+// Genauigkeits-Hebel.
+const NAME_BAND = { x0: 0.05, x1: 0.78, y0: 0.055, y1: 0.185 };
+
+// Rechnet die Position des sichtbaren Ausrichtrahmens (CSS-Pixel) auf die
+// tatsächlichen Quellpixel des Kamera-Streams um - notwendig, weil das
+// <video>-Element per object-fit:cover skaliert/beschnitten dargestellt wird.
+function getCoverSourceRect(video, displayRect, videoRect) {
+  const leftFrac = (displayRect.left - videoRect.left) / videoRect.width;
+  const topFrac = (displayRect.top - videoRect.top) / videoRect.height;
+  const widthFrac = displayRect.width / videoRect.width;
+  const heightFrac = displayRect.height / videoRect.height;
+
+  const videoAspect = video.videoWidth / video.videoHeight;
+  const boxAspect = videoRect.width / videoRect.height;
+  let visW, visH, cropX, cropY;
+  if (videoAspect > boxAspect) {
+    visH = video.videoHeight;
+    visW = boxAspect * visH;
+    cropX = (video.videoWidth - visW) / 2;
+    cropY = 0;
+  } else {
+    visW = video.videoWidth;
+    visH = visW / boxAspect;
+    cropX = 0;
+    cropY = (video.videoHeight - visH) / 2;
+  }
+
+  return {
+    sx: cropX + leftFrac * visW,
+    sy: cropY + topFrac * visH,
+    sw: widthFrac * visW,
+    sh: heightFrac * visH,
+  };
+}
+
+// Schneidet aus dem Live-Video genau den Bereich innerhalb des
+// Ausrichtrahmens aus - das Ergebnis ist (bei korrekter Ausrichtung) exakt
+// die fotografierte Karte, ohne Hintergrund.
+function captureCardCanvas() {
+  const video = $("#scan-video");
+  const guide = $("#scan-card-guide");
+  const videoRect = video.getBoundingClientRect();
+  const guideRect = guide.getBoundingClientRect();
+  const { sx, sy, sw, sh } = getCoverSourceRect(video, guideRect, videoRect);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sw));
+  canvas.height = Math.max(1, Math.round(sh));
+  canvas.getContext("2d").drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+function extractNameBand(cardCanvas) {
+  const x = Math.round(cardCanvas.width * NAME_BAND.x0);
+  const y = Math.round(cardCanvas.height * NAME_BAND.y0);
+  const w = Math.round(cardCanvas.width * (NAME_BAND.x1 - NAME_BAND.x0));
+  const h = Math.round(cardCanvas.height * (NAME_BAND.y1 - NAME_BAND.y0));
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, w);
+  canvas.height = Math.max(1, h);
+  canvas.getContext("2d").drawImage(cardCanvas, x, y, w, h, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+// Vergrößert den Ausschnitt, wandelt ihn in Graustufen um und binarisiert ihn
+// (Otsu-Schwellenwert) zu reinem Schwarz/Weiß. Erkennt automatisch, ob der
+// Kartenname hell-auf-dunkel (die meisten Kartentypen) oder dunkel-auf-hell
+// (z.B. Synchro-Karten) gedruckt ist, und normalisiert auf ein einheitliches
+// Format - das verbessert die Texterkennung erheblich gegenüber rohen
+// Kamerabildern mit Farbverläufen.
+function preprocessForOcr(sourceCanvas, targetHeight = 140) {
+  const scale = targetHeight / sourceCanvas.height;
+  const w = Math.max(1, Math.round(sourceCanvas.width * scale));
+  const h = targetHeight;
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(sourceCanvas, 0, 0, w, h);
+
+  const imgData = ctx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  const n = w * h;
+  const gray = new Uint8ClampedArray(n);
+  const hist = new Array(256).fill(0);
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+    gray[p] = g;
+    hist[g]++;
+  }
+
+  // Otsu-Schwellenwert: findet automatisch den besten Trennwert zwischen Text und Hintergrund
+  let sum = 0;
+  for (let t = 0; t < 256; t++) sum += t * hist[t];
+  let sumB = 0,
+    wB = 0,
+    maxVar = 0,
+    threshold = 127;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = n - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sum - sumB) / wF;
+    const varBetween = wB * wF * (mB - mF) * (mB - mF);
+    if (varBetween > maxVar) {
+      maxVar = varBetween;
+      threshold = t;
+    }
+  }
+
+  let darkCount = 0;
+  for (let p = 0; p < n; p++) if (gray[p] < threshold) darkCount++;
+  const invert = darkCount > n / 2; // Mehrheit dunkel -> invertieren, damit Ergebnis dunkler Text auf hellem Grund ist
+
+  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+    let v = gray[p] < threshold ? 0 : 255;
+    if (invert) v = 255 - v;
+    d[i] = d[i + 1] = d[i + 2] = v;
+  }
+  ctx.putImageData(imgData, 0, 0);
+  return out;
+}
+
+async function recognizeText(canvas, psm) {
+  const worker = await getOcrWorker();
+  await worker.setParameters({ tessedit_pageseg_mode: psm });
+  const {
+    data: { text },
+  } = await worker.recognize(canvas);
+  return text || "";
+}
+
+async function captureAndRecognize() {
+  const cardCanvas = captureCardCanvas();
+  $("#scan-captured-img").src = cardCanvas.toDataURL("image/jpeg", 0.9);
   $("#scan-captured-img").classList.remove("hidden");
-  video.classList.add("hidden");
+  $("#scan-video").classList.add("hidden");
+  $("#scan-card-guide").classList.add("hidden");
   stopScanCamera();
 
   $("#scan-capture-btn").classList.add("hidden");
@@ -1115,12 +1253,20 @@ async function captureAndRecognize() {
   $("#scan-status").textContent = "Erkenne Text … (beim ersten Mal dauert das Laden der Erkennung etwas länger)";
 
   try {
-    const worker = await getOcrWorker();
-    const {
-      data: { text },
-    } = await worker.recognize(canvas);
+    // 1. Versuch: nur der Namensbereich, als Einzelzeile erkannt (schnell & präzise)
+    const nameBand = extractNameBand(cardCanvas);
+    const processedBand = preprocessForOcr(nameBand);
+    let text = await recognizeText(processedBand, "7"); // PSM 7 = einzelne Textzeile
+    let guess = extractLikelyCardName(text);
 
-    const guess = extractLikelyCardName(text);
+    // 2. Fallback: ganze Karte, falls im Namensbereich nichts Brauchbares gefunden wurde
+    // (z.B. weil die Ausrichtung nicht exakt genug war)
+    if (!guess) {
+      const processedFull = preprocessForOcr(cardCanvas, 220);
+      text = await recognizeText(processedFull, "6"); // PSM 6 = einheitlicher Textblock
+      guess = extractLikelyCardName(text);
+    }
+
     $("#scan-name-row").classList.remove("hidden");
     $("#scan-name-input").value = guess;
 
@@ -1141,9 +1287,8 @@ async function getOcrWorker() {
   return ocrWorker;
 }
 
-// Heuristik: Der Kartenname steht bei Yu-Gi-Oh-Karten immer als erste,
-// prominente Textzeile ganz oben auf der Karte. Wir nehmen die erste
-// brauchbar lange erkannte Zeile und säubern sie von OCR-Störzeichen.
+// Nimmt die erste brauchbar lange Zeile aus dem OCR-Ergebnis und säubert sie
+// von Störzeichen (Umlaute/Sonderzeichen im Kartennamen bleiben erhalten).
 function extractLikelyCardName(rawText) {
   const lines = (rawText || "")
     .split("\n")
@@ -1156,6 +1301,7 @@ function resetScan() {
   stopScanCamera();
   $("#scan-video").classList.add("hidden");
   $("#scan-captured-img").classList.add("hidden");
+  $("#scan-card-guide").classList.add("hidden");
   $("#scan-placeholder").classList.remove("hidden");
   $("#scan-start-btn").classList.remove("hidden");
   $("#scan-capture-btn").classList.add("hidden");
@@ -1232,6 +1378,7 @@ function stopAutoScan() {
 function stopAutoScanAndReview() {
   stopAutoScan();
   $("#scan-video").classList.add("hidden");
+  $("#scan-card-guide").classList.add("hidden");
   $("#scan-placeholder").classList.remove("hidden");
   $("#auto-scan-start-btn").classList.remove("hidden");
   $("#auto-scan-stop-btn").classList.add("hidden");
@@ -1240,10 +1387,15 @@ function stopAutoScanAndReview() {
 
 function checkMotionTick() {
   const video = $("#scan-video");
+  const guide = $("#scan-card-guide");
   if (!video.videoWidth) return;
 
+  const videoRect = video.getBoundingClientRect();
+  const guideRect = guide.getBoundingClientRect();
+  const { sx, sy, sw, sh } = getCoverSourceRect(video, guideRect, videoRect);
+
   const ctx = motionSmallCanvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(video, 0, 0, motionSmallCanvas.width, motionSmallCanvas.height);
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, motionSmallCanvas.width, motionSmallCanvas.height);
   const frame = ctx.getImageData(0, 0, motionSmallCanvas.width, motionSmallCanvas.height).data;
 
   if (lastSmallFrameData) {
@@ -1275,12 +1427,8 @@ function checkMotionTick() {
 }
 
 function captureForAutoScan() {
-  const video = $("#scan-video");
-  const canvas = document.createElement("canvas");
-  canvas.width = video.videoWidth;
-  canvas.height = video.videoHeight;
-  canvas.getContext("2d").drawImage(video, 0, 0);
-  const thumb = canvas.toDataURL("image/jpeg", 0.75);
+  const cardCanvas = captureCardCanvas();
+  const thumb = cardCanvas.toDataURL("image/jpeg", 0.75);
 
   const item = {
     id: "s" + Date.now() + Math.random().toString(36).slice(2, 7),
@@ -1293,16 +1441,24 @@ function captureForAutoScan() {
   autoScanQueue.push(item);
   renderScanQueue();
 
-  ocrChain = ocrChain.then(() => processAutoScanItem(item, canvas)).catch(() => {});
+  ocrChain = ocrChain.then(() => processAutoScanItem(item, cardCanvas)).catch(() => {});
 }
 
-async function processAutoScanItem(item, canvas) {
+async function processAutoScanItem(item, cardCanvas) {
   try {
-    const worker = await getOcrWorker();
-    const {
-      data: { text },
-    } = await worker.recognize(canvas);
+    // 1. Versuch: nur der Namensbereich, als Einzelzeile
+    const nameBand = extractNameBand(cardCanvas);
+    const processedBand = preprocessForOcr(nameBand);
+    let text = await recognizeText(processedBand, "7");
     item.guess = extractLikelyCardName(text);
+
+    // 2. Fallback: ganze Karte, falls nichts gefunden
+    if (!item.guess) {
+      const processedFull = preprocessForOcr(cardCanvas, 220);
+      text = await recognizeText(processedFull, "6");
+      item.guess = extractLikelyCardName(text);
+    }
+
     item.status = "searching";
     renderScanQueue();
 
