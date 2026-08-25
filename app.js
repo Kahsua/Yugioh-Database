@@ -1107,7 +1107,7 @@ function stopScanCamera() {
 // der Karte. Statt das ganze Kamerabild (inkl. Hintergrund) zu erkennen,
 // schneiden wir gezielt nur diesen Bereich aus - das ist der größte
 // Genauigkeits-Hebel.
-const NAME_BAND = { x0: 0.05, x1: 0.78, y0: 0.055, y1: 0.185 };
+const NAME_BAND = { x0: 0.04, x1: 0.8, y0: 0.02, y1: 0.078 };
 
 // Rechnet die Position des sichtbaren Ausrichtrahmens (CSS-Pixel) auf die
 // tatsächlichen Quellpixel des Kamera-Streams um - notwendig, weil das
