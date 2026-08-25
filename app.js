@@ -1257,6 +1257,11 @@ async function captureAndRecognize() {
     // 1. Versuch: nur der Namensbereich, als Einzelzeile erkannt (schnell & präzise)
     const nameBand = extractNameBand(cardCanvas);
     const processedBand = preprocessForOcr(nameBand);
+
+    // Diagnose-Vorschau: zeigt exakt das Bild, das an die Texterkennung geht
+    $("#scan-debug-img").src = processedBand.toDataURL("image/png");
+    $("#scan-debug").classList.remove("hidden");
+
     let text = await recognizeText(processedBand, "7"); // PSM 7 = einzelne Textzeile
     let guess = extractLikelyCardName(text);
 
@@ -1264,6 +1269,7 @@ async function captureAndRecognize() {
     // (z.B. weil die Ausrichtung nicht exakt genug war)
     if (!guess) {
       const processedFull = preprocessForOcr(cardCanvas, 220);
+      $("#scan-debug-img").src = processedFull.toDataURL("image/png");
       text = await recognizeText(processedFull, "6"); // PSM 6 = einheitlicher Textblock
       guess = extractLikelyCardName(text);
     }
@@ -1308,6 +1314,7 @@ function resetScan() {
   $("#scan-capture-btn").classList.add("hidden");
   $("#scan-retry-btn").classList.add("hidden");
   $("#scan-name-row").classList.add("hidden");
+  $("#scan-debug").classList.add("hidden");
   $("#scan-name-input").value = "";
   $("#scan-status").textContent = "";
   $("#scan-search-status").textContent = "";
