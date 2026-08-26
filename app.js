@@ -1107,7 +1107,11 @@ function stopScanCamera() {
 // der Karte. Statt das ganze Kamerabild (inkl. Hintergrund) zu erkennen,
 // schneiden wir gezielt nur diesen Bereich aus - das ist der größte
 // Genauigkeits-Hebel.
-const NAME_BAND = { x0: 0.04, x1: 0.8, y0: 0.02, y1: 0.078 };
+// Enger, präziser Ausschnitt um die Titelzeile (mit etwas Sicherheitsabstand),
+// als Einzelzeile erkannt - das lieferte in Tests deutlich bessere Ergebnisse
+// als ein größerer Bereich (der bringt zu viel unruhigen Wolkenhintergrund
+// und den Bildrahmen mit rein, was die Kontrastberechnung verwirrt).
+const NAME_BAND = { x0: 0.04, x1: 0.85, y0: 0.015, y1: 0.095 };
 
 // Rechnet die Position des sichtbaren Ausrichtrahmens (CSS-Pixel) auf die
 // tatsächlichen Quellpixel des Kamera-Streams um - notwendig, weil das
@@ -1254,9 +1258,10 @@ async function captureAndRecognize() {
   $("#scan-status").textContent = "Erkenne Text … (beim ersten Mal dauert das Laden der Erkennung etwas länger)";
 
   try {
-    // 1. Versuch: nur der Namensbereich, als Einzelzeile erkannt (schnell & präzise)
+    // 1. Versuch: oberer Kartenbereich (Titelzeile + Unterzeile), Tesseract
+    // erkennt die Zeilenstruktur selbst
     const nameBand = extractNameBand(cardCanvas);
-    const processedBand = preprocessForOcr(nameBand);
+    const processedBand = preprocessForOcr(nameBand, 140);
 
     // Diagnose-Vorschau: zeigt exakt das Bild, das an die Texterkennung geht
     $("#scan-debug-img").src = processedBand.toDataURL("image/png");
@@ -1268,7 +1273,7 @@ async function captureAndRecognize() {
     // 2. Fallback: ganze Karte, falls im Namensbereich nichts Brauchbares gefunden wurde
     // (z.B. weil die Ausrichtung nicht exakt genug war)
     if (!guess) {
-      const processedFull = preprocessForOcr(cardCanvas, 220);
+      const processedFull = preprocessForOcr(cardCanvas, 260);
       $("#scan-debug-img").src = processedFull.toDataURL("image/png");
       text = await recognizeText(processedFull, "6"); // PSM 6 = einheitlicher Textblock
       guess = extractLikelyCardName(text);
@@ -1294,14 +1299,19 @@ async function getOcrWorker() {
   return ocrWorker;
 }
 
-// Nimmt die erste brauchbar lange Zeile aus dem OCR-Ergebnis und säubert sie
-// von Störzeichen (Umlaute/Sonderzeichen im Kartennamen bleiben erhalten).
+// Der Kartenname ist innerhalb des oberen Kartenbereichs fast immer die
+// längste zusammenhängende Textzeile (länger als z.B. "[Zauberkarte]" oder
+// Fragmente vom Rand). Wir wählen daher unter den ersten Zeilen die längste
+// aus, statt stur die erste zu nehmen - toleranter gegenüber Rand-Rauschen.
 function extractLikelyCardName(rawText) {
   const lines = (rawText || "")
     .split("\n")
     .map((l) => l.replace(/[^\p{L}\p{N}\s\-,'"!.]/gu, "").trim())
-    .filter((l) => l.length >= 3);
-  return lines.length > 0 ? lines[0] : "";
+    .filter((l) => l.length >= 4);
+  if (lines.length === 0) return "";
+  const candidates = lines.slice(0, 4); // nur die obersten paar Zeilen betrachten
+  candidates.sort((a, b) => b.length - a.length);
+  return candidates[0];
 }
 
 function resetScan() {
@@ -1454,15 +1464,15 @@ function captureForAutoScan() {
 
 async function processAutoScanItem(item, cardCanvas) {
   try {
-    // 1. Versuch: nur der Namensbereich, als Einzelzeile
+    // 1. Versuch: oberer Kartenbereich (Titelzeile + Unterzeile)
     const nameBand = extractNameBand(cardCanvas);
-    const processedBand = preprocessForOcr(nameBand);
+    const processedBand = preprocessForOcr(nameBand, 140);
     let text = await recognizeText(processedBand, "7");
     item.guess = extractLikelyCardName(text);
 
     // 2. Fallback: ganze Karte, falls nichts gefunden
     if (!item.guess) {
-      const processedFull = preprocessForOcr(cardCanvas, 220);
+      const processedFull = preprocessForOcr(cardCanvas, 260);
       text = await recognizeText(processedFull, "6");
       item.guess = extractLikelyCardName(text);
     }
