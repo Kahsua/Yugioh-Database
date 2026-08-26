@@ -1111,7 +1111,7 @@ function stopScanCamera() {
 // als Einzelzeile erkannt - das lieferte in Tests deutlich bessere Ergebnisse
 // als ein größerer Bereich (der bringt zu viel unruhigen Wolkenhintergrund
 // und den Bildrahmen mit rein, was die Kontrastberechnung verwirrt).
-const NAME_BAND = { x0: 0.04, x1: 0.85, y0: 0.015, y1: 0.095 };
+const NAME_BAND = { x0: 0.04, x1: 0.92, y0: 0.035, y1: 0.095 };
 
 // Rechnet die Position des sichtbaren Ausrichtrahmens (CSS-Pixel) auf die
 // tatsächlichen Quellpixel des Kamera-Streams um - notwendig, weil das
