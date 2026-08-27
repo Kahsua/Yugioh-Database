@@ -27,6 +27,44 @@ let profilesCache = {}; // id -> username
 function $(sel) { return document.querySelector(sel); }
 function $all(sel) { return document.querySelectorAll(sel); }
 
+// ============================================================
+// ANDROID-"ZURÜCK"-TASTE: Modal schließen statt Seite/App verlassen
+// ============================================================
+// Beim Öffnen eines Modals legen wir einen zusätzlichen Browser-Verlaufseintrag
+// an. Drückt der Nutzer danach "Zurück" (Android-Systemgeste/-Taste), fängt
+// der popstate-Event das ab und schließt nur das Modal, statt die App zu
+// verlassen. Schließt der Nutzer stattdessen über den X-Button/Klick daneben,
+// entfernen wir den Verlaufseintrag sauber wieder per history.back(), damit
+// sich keine "leeren" Einträge ansammeln.
+let modalHistoryPushed = false;
+
+function pushModalHistory() {
+  if (!modalHistoryPushed) {
+    modalHistoryPushed = true;
+    history.pushState({ ygoModalOpen: true }, "");
+  }
+}
+
+function hideAllModals() {
+  $("#add-modal").classList.add("hidden");
+  $("#detail-modal").classList.add("hidden");
+}
+
+function closeOpenModal() {
+  if (modalHistoryPushed) {
+    history.back(); // löst popstate aus, das unten tatsächlich schließt
+  } else {
+    hideAllModals();
+  }
+}
+
+window.addEventListener("popstate", () => {
+  if (modalHistoryPushed) {
+    modalHistoryPushed = false;
+    hideAllModals();
+  }
+});
+
 function showToast(msg) {
   const t = $("#toast");
   t.textContent = msg;
@@ -338,11 +376,12 @@ function openAddModal(card) {
   $("#modal-qty").value = 1;
   $("#modal-msg").textContent = "";
   $("#add-modal").classList.remove("hidden");
+  pushModalHistory();
 }
 
-$("#modal-close").addEventListener("click", () => $("#add-modal").classList.add("hidden"));
+$("#modal-close").addEventListener("click", closeOpenModal);
 $("#add-modal").addEventListener("click", (e) => {
-  if (e.target.id === "add-modal") $("#add-modal").classList.add("hidden");
+  if (e.target.id === "add-modal") closeOpenModal();
 });
 
 $("#modal-save").addEventListener("click", async () => {
@@ -380,7 +419,7 @@ $("#modal-save").addEventListener("click", async () => {
   logHistory("add", modalCard.name_de || modalCard.name_en, { qtyAfter: qty });
   renderMineList();
   renderAllList();
-  setTimeout(() => $("#add-modal").classList.add("hidden"), 700);
+  setTimeout(closeOpenModal, 700);
 });
 
 // ============================================================
@@ -678,25 +717,26 @@ function openDetailModal(card, editable) {
   if (editable) {
     editRow.querySelector('[data-action="inc"]').onclick = () => {
       updateQty(card, card.quantity + 1);
-      $("#detail-modal").classList.add("hidden");
+      closeOpenModal();
     };
     editRow.querySelector('[data-action="dec"]').onclick = () => {
       if (card.quantity <= 1) deleteCard(card);
       else updateQty(card, card.quantity - 1);
-      $("#detail-modal").classList.add("hidden");
+      closeOpenModal();
     };
     editRow.querySelector('[data-action="del"]').onclick = () => {
       deleteCard(card);
-      $("#detail-modal").classList.add("hidden");
+      closeOpenModal();
     };
   }
 
   $("#detail-modal").classList.remove("hidden");
+  pushModalHistory();
 }
 
-$("#detail-modal-close").addEventListener("click", () => $("#detail-modal").classList.add("hidden"));
+$("#detail-modal-close").addEventListener("click", closeOpenModal);
 $("#detail-modal").addEventListener("click", (e) => {
-  if (e.target.id === "detail-modal") $("#detail-modal").classList.add("hidden");
+  if (e.target.id === "detail-modal") closeOpenModal();
 });
 
 // ============================================================
