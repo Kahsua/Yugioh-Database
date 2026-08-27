@@ -590,17 +590,19 @@ function renderCardList(containerSel, cards, { showOwner, editable }) {
           ${statBits.map((s) => `<span>${s}</span>`).join("")}
         </div>
       </div>
-      ${showOwner ? `<span class="card-row-owner">${profilesCache[card.owner_id] || "Unbekannt"}</span>` : ""}
-      <span class="card-row-qty">×${card.quantity}</span>
-      ${
-        editable
-          ? `<div class="card-row-actions">
-               <button class="icon-btn" data-action="dec" title="Anzahl verringern">−</button>
-               <button class="icon-btn" data-action="inc" title="Anzahl erhöhen">+</button>
-               <button class="icon-btn danger" data-action="del" title="Löschen">🗑</button>
-             </div>`
-          : ""
-      }
+      <div class="card-row-trailing">
+        ${showOwner ? `<span class="card-row-owner">${profilesCache[card.owner_id] || "Unbekannt"}</span>` : ""}
+        <span class="card-row-qty">×${card.quantity}</span>
+        ${
+          editable
+            ? `<div class="card-row-actions">
+                 <button class="icon-btn" data-action="dec" title="Anzahl verringern">−</button>
+                 <button class="icon-btn" data-action="inc" title="Anzahl erhöhen">+</button>
+                 <button class="icon-btn danger" data-action="del" title="Löschen">🗑</button>
+               </div>`
+            : ""
+        }
+      </div>
     `;
 
     if (editable) {

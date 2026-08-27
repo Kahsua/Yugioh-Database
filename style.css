@@ -378,6 +378,7 @@ input:focus, select:focus {
   min-width: 2.2rem;
   text-align: center;
 }
+.card-row-trailing { display: flex; align-items: center; gap: 0.6rem; flex-shrink: 0; }
 .card-row-actions { display: flex; gap: 0.35rem; }
 .icon-btn {
   background: transparent; border: 1px solid var(--panel-border);
@@ -640,4 +641,37 @@ input:focus, select:focus {
   .user-chip { justify-content: space-between; }
   .modal-body { flex-direction: column; }
   .modal-img { width: 100%; max-width: 200px; aspect-ratio: 59 / 86; }
+
+  /* Kartenzeilen: Bild+Name auf einer Zeile, Besitzer/Anzahl/Aktionen brechen
+     gemeinsam in eine zweite Zeile um, statt die Breite zu sprengen */
+  .card-row { flex-wrap: wrap; }
+  .card-row-main { flex-basis: 140px; }
+  .card-row-trailing {
+    flex-basis: 100%;
+    justify-content: flex-end;
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px solid var(--panel-border);
+  }
+
+  /* Etwas größere Schrift für bessere Lesbarkeit ohne Zoomen */
+  .card-row-name { font-size: 1rem; white-space: normal; }
+  .card-row-meta { font-size: 0.78rem; }
+  .modal-desc { font-size: 0.9rem; }
+  .modal-info h2 { font-size: 1.1rem; }
+  .modal-stats span { font-size: 0.8rem; padding: 0.35rem 0.7rem; }
+
+  /* Größere Tap-Ziele */
+  .icon-btn { width: 34px; height: 34px; }
+
+  /* Filter-Zeilen: jedes Element auf eigener Zeile statt gequetscht */
+  .toolbar select, .toolbar input { flex-basis: 100%; min-width: 0; }
+
+  /* Scan-Review-Zeilen ebenfalls umbruchsicher */
+  .scan-review-row { flex-wrap: wrap; }
+  .scan-review-row .review-main { flex-basis: 140px; }
 }
+
+/* Sicherheitsnetz: verhindert horizontales Verschieben der Gesamtseite,
+   falls doch irgendwo ein Element zu breit gerät */
+html, body { overflow-x: hidden; max-width: 100vw; }
