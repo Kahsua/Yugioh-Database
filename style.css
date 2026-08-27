@@ -671,7 +671,3 @@ input:focus, select:focus {
   .scan-review-row { flex-wrap: wrap; }
   .scan-review-row .review-main { flex-basis: 140px; }
 }
-
-/* Sicherheitsnetz: verhindert horizontales Verschieben der Gesamtseite,
-   falls doch irgendwo ein Element zu breit gerät */
-html, body { overflow-x: hidden; max-width: 100vw; }
