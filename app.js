@@ -177,6 +177,28 @@ $("#logout-btn").addEventListener("click", async () => {
 });
 
 // ============================================================
+// UPDATE ERZWINGEN (v.a. für die installierte App/WebAPK gedacht -
+// die prüft viel seltener von selbst auf neue Versionen als ein
+// normaler Browser-Tab)
+// ============================================================
+$("#force-update-btn").addEventListener("click", async () => {
+  showToast("Suche nach Updates …");
+  try {
+    if ("serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((r) => r.unregister()));
+    }
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+  } catch (err) {
+    // egal, trotzdem neu laden versuchen
+  }
+  location.href = location.pathname + "?_fresh=" + Date.now();
+});
+
+// ============================================================
 // SESSION HANDLING
 // ============================================================
 async function initSession() {
