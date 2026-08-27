@@ -1105,13 +1105,9 @@ function stopScanCamera() {
 
 // Der Kartenname steht bei Yu-Gi-Oh-Karten immer im selben Bereich oben auf
 // der Karte. Statt das ganze Kamerabild (inkl. Hintergrund) zu erkennen,
-// schneiden wir gezielt nur diesen Bereich aus - das ist der größte
-// Genauigkeits-Hebel.
-// Enger, präziser Ausschnitt um die Titelzeile (mit etwas Sicherheitsabstand),
-// als Einzelzeile erkannt - das lieferte in Tests deutlich bessere Ergebnisse
-// als ein größerer Bereich (der bringt zu viel unruhigen Wolkenhintergrund
-// und den Bildrahmen mit rein, was die Kontrastberechnung verwirrt).
-const NAME_BAND = { x0: 0.04, x1: 0.92, y0: 0.035, y1: 0.095 };
+// schneiden wir gezielt diesen Bereich aus - in mehreren Varianten
+// (siehe bestGuessFromCard), damit kleine Abweichungen bei der
+// Kartenausrichtung nicht zum Totalausfall führen.
 
 // Rechnet die Position des sichtbaren Ausrichtrahmens (CSS-Pixel) auf die
 // tatsächlichen Quellpixel des Kamera-Streams um - notwendig, weil das
@@ -1162,11 +1158,11 @@ function captureCardCanvas() {
   return canvas;
 }
 
-function extractNameBand(cardCanvas) {
-  const x = Math.round(cardCanvas.width * NAME_BAND.x0);
-  const y = Math.round(cardCanvas.height * NAME_BAND.y0);
-  const w = Math.round(cardCanvas.width * (NAME_BAND.x1 - NAME_BAND.x0));
-  const h = Math.round(cardCanvas.height * (NAME_BAND.y1 - NAME_BAND.y0));
+function extractCropFraction(cardCanvas, x0, x1, y0, y1) {
+  const x = Math.round(cardCanvas.width * x0);
+  const y = Math.round(cardCanvas.height * y0);
+  const w = Math.round(cardCanvas.width * (x1 - x0));
+  const h = Math.round(cardCanvas.height * (y1 - y0));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, w);
   canvas.height = Math.max(1, h);
@@ -1245,6 +1241,47 @@ async function recognizeText(canvas, psm) {
   return text || "";
 }
 
+async function recognizeWithConfidence(canvas, psm) {
+  const worker = await getOcrWorker();
+  await worker.setParameters({ tessedit_pageseg_mode: psm });
+  const { data } = await worker.recognize(canvas);
+  return { text: data.text || "", confidence: data.confidence || 0 };
+}
+
+// ============================================================
+// MEHRERE AUSSCHNITT-VARIANTEN GLEICHZEITIG VERSUCHEN
+// ============================================================
+// Statt sich auf EINE exakt kalibrierte Position zu verlassen (die bei
+// leicht abweichender Kartenausrichtung ins Leere läuft), probiert die App
+// mehrere Ausschnitte durch - von eng bis großzügig - und nimmt das
+// Ergebnis, bei dem Tesseract selbst am sichersten ist (Confidence-Wert).
+// Das macht die Erkennung deutlich toleranter gegenüber ungenauer
+// Kartenposition, kostet aber etwas mehr Zeit pro Scan.
+async function bestGuessFromCard(cardCanvas, onProgress) {
+  const attempts = [
+    { rect: [0.04, 0.92, 0.035, 0.095], psm: "7", h: 160, label: "eng" },
+    { rect: [0.02, 0.98, 0.0, 0.14], psm: "6", h: 200, label: "großzügig" },
+    { rect: [0.0, 1.0, 0.0, 1.0], psm: "6", h: 260, label: "ganze Karte" },
+  ];
+
+  let best = null;
+  for (const a of attempts) {
+    if (onProgress) onProgress(a.label);
+    try {
+      const crop = extractCropFraction(cardCanvas, ...a.rect);
+      const processed = preprocessForOcr(crop, a.h);
+      const { text, confidence } = await recognizeWithConfidence(processed, a.psm);
+      const guess = extractLikelyCardName(text);
+      if (guess && (!best || confidence > best.confidence)) {
+        best = { guess, confidence, canvas: processed, label: a.label };
+      }
+    } catch (err) {
+      // einzelner Versuch fehlgeschlagen - einfach mit dem nächsten weitermachen
+    }
+  }
+  return best;
+}
+
 async function captureAndRecognize() {
   const cardCanvas = captureCardCanvas();
   $("#scan-captured-img").src = cardCanvas.toDataURL("image/jpeg", 0.9);
@@ -1258,26 +1295,17 @@ async function captureAndRecognize() {
   $("#scan-status").textContent = "Erkenne Text … (beim ersten Mal dauert das Laden der Erkennung etwas länger)";
 
   try {
-    // 1. Versuch: oberer Kartenbereich (Titelzeile + Unterzeile), Tesseract
-    // erkennt die Zeilenstruktur selbst
-    const nameBand = extractNameBand(cardCanvas);
-    const processedBand = preprocessForOcr(nameBand, 140);
+    const result = await bestGuessFromCard(cardCanvas, (label) => {
+      $("#scan-status").textContent = `Erkenne Text … (Versuch: ${label})`;
+    });
 
-    // Diagnose-Vorschau: zeigt exakt das Bild, das an die Texterkennung geht
-    $("#scan-debug-img").src = processedBand.toDataURL("image/png");
-    $("#scan-debug").classList.remove("hidden");
-
-    let text = await recognizeText(processedBand, "7"); // PSM 7 = einzelne Textzeile
-    let guess = extractLikelyCardName(text);
-
-    // 2. Fallback: ganze Karte, falls im Namensbereich nichts Brauchbares gefunden wurde
-    // (z.B. weil die Ausrichtung nicht exakt genug war)
-    if (!guess) {
-      const processedFull = preprocessForOcr(cardCanvas, 260);
-      $("#scan-debug-img").src = processedFull.toDataURL("image/png");
-      text = await recognizeText(processedFull, "6"); // PSM 6 = einheitlicher Textblock
-      guess = extractLikelyCardName(text);
+    if (result) {
+      // Diagnose-Vorschau: zeigt exakt das Bild, das zum besten Ergebnis geführt hat
+      $("#scan-debug-img").src = result.canvas.toDataURL("image/png");
+      $("#scan-debug").classList.remove("hidden");
     }
+
+    const guess = result ? result.guess : "";
 
     $("#scan-name-row").classList.remove("hidden");
     $("#scan-name-input").value = guess;
@@ -1464,18 +1492,8 @@ function captureForAutoScan() {
 
 async function processAutoScanItem(item, cardCanvas) {
   try {
-    // 1. Versuch: oberer Kartenbereich (Titelzeile + Unterzeile)
-    const nameBand = extractNameBand(cardCanvas);
-    const processedBand = preprocessForOcr(nameBand, 140);
-    let text = await recognizeText(processedBand, "7");
-    item.guess = extractLikelyCardName(text);
-
-    // 2. Fallback: ganze Karte, falls nichts gefunden
-    if (!item.guess) {
-      const processedFull = preprocessForOcr(cardCanvas, 260);
-      text = await recognizeText(processedFull, "6");
-      item.guess = extractLikelyCardName(text);
-    }
+    const result = await bestGuessFromCard(cardCanvas);
+    item.guess = result ? result.guess : "";
 
     item.status = "searching";
     renderScanQueue();
