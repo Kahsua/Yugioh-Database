@@ -260,10 +260,12 @@ $all(".tab").forEach((tab) => {
     if (view === "all") renderAllList();
     if (view === "history") renderHistory();
     if (view === "scan") ensureCardDbLoaded();
+    if (view === "collect") refreshMyCardIndex();
   });
 });
 
 function refreshAllViews() {
+  refreshMyCardIndex();
   renderMineList();
   renderAllList();
 }
@@ -356,14 +358,34 @@ async function runSearch(query, statusSel, resultsSel) {
   renderSearchResults(merged, resultsSel);
 }
 
+// ============================================================
+// EIGENE SAMMLUNG ALS INDEX (für "bereits vorhanden"-Anzeige und
+// Dubletten-Schutz beim manuellen Hinzufügen)
+// ============================================================
+let myCardIndexByYgoId = new Map(); // ygo_id -> { id, quantity }
+
+async function refreshMyCardIndex() {
+  if (!supabaseClient || !currentSession) return;
+  const { data } = await fetchAllRows(() =>
+    supabaseClient
+      .from("cards")
+      .select("id, ygo_id, quantity")
+      .eq("owner_id", currentSession.user.id)
+      .not("ygo_id", "is", null)
+  );
+  myCardIndexByYgoId = new Map((data || []).map((c) => [c.ygo_id, { id: c.id, quantity: c.quantity }]));
+}
+
 function renderSearchResults(cards, resultsSel) {
   const grid = $(resultsSel || "#search-results");
   grid.innerHTML = "";
   cards.forEach((card) => {
+    const owned = myCardIndexByYgoId.get(card.id);
     const el = document.createElement("div");
     el.className = "result-card";
     el.innerHTML = `
       <img src="${card.image}" alt="${card.name_en}" loading="lazy" />
+      ${owned ? `<span class="result-card-owned">Bereits ×${owned.quantity}</span>` : ""}
       <div class="result-card-body">
         <div class="result-card-name">${card.name_de || card.name_en}</div>
         ${card.name_de ? `<div class="result-card-name-en">${card.name_en}</div>` : ""}
@@ -397,6 +419,16 @@ function openAddModal(card) {
   $("#modal-desc-en").textContent = card.desc_en || "No English card text available.";
   $("#modal-qty").value = 1;
   $("#modal-msg").textContent = "";
+
+  const owned = myCardIndexByYgoId.get(card.id);
+  const ownedInfo = $("#modal-owned-info");
+  if (owned) {
+    ownedInfo.textContent = `Du hast bereits ${owned.quantity}× diese Karte in deiner Sammlung - die neue Anzahl wird addiert.`;
+    ownedInfo.classList.remove("hidden");
+  } else {
+    ownedInfo.classList.add("hidden");
+  }
+
   $("#add-modal").classList.remove("hidden");
   pushModalHistory();
 }
@@ -411,34 +443,92 @@ $("#modal-save").addEventListener("click", async () => {
   const qty = parseInt($("#modal-qty").value, 10) || 1;
   const btn = $("#modal-save");
   btn.disabled = true;
-  const { error } = await supabaseClient.from("cards").insert({
-    owner_id: currentSession.user.id,
-    ygo_id: modalCard.id,
-    name_de: modalCard.name_de,
-    name_en: modalCard.name_en,
-    card_type: modalCard.type,
-    attribute: modalCard.attribute,
-    race: modalCard.race,
-    atk: modalCard.atk,
-    def: modalCard.def,
-    level: modalCard.level,
-    image_url: modalCard.image,
-    quantity: qty,
-    effect_text_de: modalCard.desc_de || null,
-    effect_text_en: modalCard.desc_en || null,
-    archetype: modalCard.archetype || null,
-    scale: modalCard.scale ?? null,
-  });
+
+  // Immer frisch (nicht nur aus dem Cache) prüfen, ob diese Karte per YGO-ID
+  // bereits existiert - das verhindert Dubletten, egal ob die Karte vorher per
+  // CSV-Import oder manuell angelegt wurde.
+  const { data: existingByIdRows } = await supabaseClient
+    .from("cards")
+    .select("id, quantity")
+    .eq("owner_id", currentSession.user.id)
+    .eq("ygo_id", modalCard.id)
+    .limit(1);
+  let existing = existingByIdRows && existingByIdRows[0];
+
+  // Zusatz-Sicherheitsnetz: Karten aus dem CSV-Import, die dort keinen
+  // automatischen Treffer hatten, haben keine ygo_id. Über den Namen
+  // trotzdem abgleichen, damit auch die nicht doppelt angelegt werden.
+  if (!existing) {
+    const { data: nameRows } = await supabaseClient
+      .from("cards")
+      .select("id, quantity, name_de, name_en")
+      .eq("owner_id", currentSession.user.id)
+      .is("ygo_id", null);
+    const nameDe = (modalCard.name_de || "").toLowerCase();
+    const nameEn = (modalCard.name_en || "").toLowerCase();
+    existing = (nameRows || []).find(
+      (r) => (r.name_de && r.name_de.toLowerCase() === nameDe) || (r.name_en && r.name_en.toLowerCase() === nameEn)
+    );
+  }
+
+  let error;
+  if (existing) {
+    const newQty = existing.quantity + qty;
+    ({ error } = await supabaseClient
+      .from("cards")
+      .update({
+        quantity: newQty,
+        ygo_id: modalCard.id, // jetzt sicher bekannt, ggf. nachtragen
+        image_url: modalCard.image,
+        effect_text_de: modalCard.desc_de || null,
+        effect_text_en: modalCard.desc_en || null,
+      })
+      .eq("id", existing.id));
+    if (!error) {
+      logHistory("update", modalCard.name_de || modalCard.name_en, {
+        cardId: existing.id,
+        qtyBefore: existing.quantity,
+        qtyAfter: newQty,
+      });
+      $("#modal-msg").style.color = "var(--spell)";
+      $("#modal-msg").textContent = `War bereits vorhanden - Anzahl aktualisiert: ${existing.quantity} → ${newQty}`;
+      showToast(`Anzahl aktualisiert: ${newQty}× "${modalCard.name_de || modalCard.name_en}"`);
+    }
+  } else {
+    ({ error } = await supabaseClient.from("cards").insert({
+      owner_id: currentSession.user.id,
+      ygo_id: modalCard.id,
+      name_de: modalCard.name_de,
+      name_en: modalCard.name_en,
+      card_type: modalCard.type,
+      attribute: modalCard.attribute,
+      race: modalCard.race,
+      atk: modalCard.atk,
+      def: modalCard.def,
+      level: modalCard.level,
+      image_url: modalCard.image,
+      quantity: qty,
+      effect_text_de: modalCard.desc_de || null,
+      effect_text_en: modalCard.desc_en || null,
+      archetype: modalCard.archetype || null,
+      scale: modalCard.scale ?? null,
+    }));
+    if (!error) {
+      $("#modal-msg").style.color = "var(--spell)";
+      $("#modal-msg").textContent = "Zur Sammlung hinzugefügt!";
+      showToast(`${qty}× "${modalCard.name_de || modalCard.name_en}" gespeichert`);
+      logHistory("add", modalCard.name_de || modalCard.name_en, { qtyAfter: qty });
+    }
+  }
+
   btn.disabled = false;
   if (error) {
     $("#modal-msg").style.color = "var(--danger)";
     $("#modal-msg").textContent = "Fehler: " + error.message;
     return;
   }
-  $("#modal-msg").style.color = "var(--spell)";
-  $("#modal-msg").textContent = "Zur Sammlung hinzugefügt!";
-  showToast(`${qty}× "${modalCard.name_de || modalCard.name_en}" gespeichert`);
-  logHistory("add", modalCard.name_de || modalCard.name_en, { qtyAfter: qty });
+
+  await refreshMyCardIndex();
   renderMineList();
   renderAllList();
   setTimeout(closeOpenModal, 700);
@@ -692,6 +782,7 @@ async function updateQty(card, newQty) {
   const { error } = await supabaseClient.from("cards").update({ quantity: newQty }).eq("id", card.id);
   if (error) return showToast("Fehler: " + error.message);
   logHistory("update", card.name_de || card.name_en, { cardId: card.id, qtyBefore: card.quantity, qtyAfter: newQty });
+  await refreshMyCardIndex();
   renderMineList();
   renderAllList();
 }
@@ -701,6 +792,7 @@ async function deleteCard(card) {
   if (error) return showToast("Fehler: " + error.message);
   showToast(`"${card.name_de || card.name_en}" entfernt`);
   logHistory("delete", card.name_de || card.name_en, { qtyBefore: card.quantity });
+  await refreshMyCardIndex();
   renderMineList();
   renderAllList();
 }
@@ -1058,6 +1150,7 @@ async function runImport() {
     statusEl.textContent = "Import abgeschlossen!";
     showResults(toInsert.length, skipped, notFound, toEnrich.length);
     logHistory("import", `CSV-Import: ${toInsert.length} neu, ${toEnrich.length} ergänzt`, {});
+    await refreshMyCardIndex();
     renderMineList();
     renderAllList();
   } catch (err) {
@@ -1882,6 +1975,7 @@ async function saveAutoScanQueue() {
   autoScanQueue = [];
   $("#scan-review").classList.add("hidden");
   resetScan();
+  await refreshMyCardIndex();
   renderMineList();
   renderAllList();
 }

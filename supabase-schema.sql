@@ -142,3 +142,35 @@ begin
     update cards set effect_text_en = effect_text where effect_text_en is null and effect_text is not null;
   end if;
 end $$;
+
+-- ============================================================
+-- Einmalige Bereinigung: Dubletten zusammenführen (gleicher Besitzer +
+-- gleiche ygo_id, entstanden z.B. wenn eine Karte per CSV-Import UND
+-- später nochmal manuell über die Suche angelegt wurde). Anzahl wird
+-- aufsummiert, überzählige Zeilen gelöscht. Gefahrlos mehrfach ausführbar -
+-- sobald keine Dubletten mehr existieren, passiert schlicht nichts.
+-- ============================================================
+with dupes as (
+  select owner_id, ygo_id, min(id) as keep_id, sum(quantity) as total_qty
+  from cards
+  where ygo_id is not null
+  group by owner_id, ygo_id
+  having count(*) > 1
+)
+update cards c
+set quantity = d.total_qty
+from dupes d
+where c.id = d.keep_id;
+
+with dupes as (
+  select owner_id, ygo_id, min(id) as keep_id
+  from cards
+  where ygo_id is not null
+  group by owner_id, ygo_id
+  having count(*) > 1
+)
+delete from cards c
+using dupes d
+where c.owner_id = d.owner_id
+  and c.ygo_id = d.ygo_id
+  and c.id <> d.keep_id;

@@ -320,6 +320,7 @@ input:focus, select:focus {
   border-radius: var(--radius);
   overflow: hidden;
   cursor: pointer;
+  position: relative;
   transition: transform 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
 }
 .result-card:hover { transform: translateY(-3px); border-color: var(--gold); box-shadow: 0 10px 24px rgba(0,0,0,0.35); }
@@ -327,6 +328,12 @@ input:focus, select:focus {
 .result-card-body { padding: 0.6rem 0.65rem; }
 .result-card-name { font-size: 0.82rem; font-weight: 700; line-height: 1.25; }
 .result-card-name-en { font-size: 0.72rem; color: var(--text-muted); margin-top: 0.15rem; }
+.result-card-owned {
+  position: absolute; top: 6px; right: 6px;
+  background: rgba(201, 162, 39, 0.92); color: #1a1406;
+  font-family: var(--font-mono); font-weight: 700; font-size: 0.65rem;
+  padding: 0.15rem 0.5rem; border-radius: 20px; white-space: nowrap;
+}
 
 /* ============================================================
    TOOLBAR / LISTS
@@ -457,6 +464,11 @@ input:focus, select:focus {
 .history-title { font-size: 0.88rem; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .history-meta { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.1rem; }
 .history-time { font-size: 0.72rem; color: var(--text-muted); font-family: var(--font-mono); white-space: nowrap; }
+.modal-owned-info {
+  font-size: 0.8rem; color: var(--gold-soft); background: rgba(201, 162, 39, 0.12);
+  border: 1px solid rgba(201, 162, 39, 0.3); border-radius: 8px;
+  padding: 0.5rem 0.7rem; margin-top: 0.9rem;
+}
 .modal-add-row { display: flex; gap: 0.6rem; align-items: flex-end; margin-top: 1rem; }
 .modal-add-row label { display: flex; flex-direction: column; gap: 0.3rem; font-size: 0.78rem; color: var(--text-muted); }
 .modal-add-row input { width: 70px; }
