@@ -372,6 +372,7 @@ async function refreshMyCardIndex() {
       .select("id, ygo_id, quantity")
       .eq("owner_id", currentSession.user.id)
       .not("ygo_id", "is", null)
+      .order("id", { ascending: true })
   );
   myCardIndexByYgoId = new Map((data || []).map((c) => [c.ygo_id, { id: c.id, quantity: c.quantity }]));
 }
@@ -540,7 +541,7 @@ $("#modal-save").addEventListener("click", async () => {
 async function renderMineList() {
   if (!supabaseClient || !currentSession) return;
   const { data, error } = await fetchAllRows(() =>
-    supabaseClient.from("cards").select("*").eq("owner_id", currentSession.user.id).order("created_at", { ascending: false })
+    supabaseClient.from("cards").select("*").eq("owner_id", currentSession.user.id).order("created_at", { ascending: false }).order("id", { ascending: false })
   );
 
   if (error) {
@@ -583,7 +584,7 @@ async function renderAllList() {
   await loadAllProfiles();
 
   const { data, error } = await fetchAllRows(() =>
-    supabaseClient.from("cards").select("*").order("created_at", { ascending: false })
+    supabaseClient.from("cards").select("*").order("created_at", { ascending: false }).order("id", { ascending: false })
   );
 
   if (error) {
@@ -868,7 +869,7 @@ async function renderHistory() {
   await loadAllProfiles();
 
   const { data, error } = await fetchAllRows(() =>
-    supabaseClient.from("history").select("*").order("created_at", { ascending: false }).limit(300)
+    supabaseClient.from("history").select("*").order("created_at", { ascending: false }).order("id", { ascending: false })
   );
 
   if (error) {
@@ -1020,6 +1021,7 @@ async function runImport() {
         .from("cards")
         .select("id, ygo_id, name_de, name_en, quantity, effect_text_de, effect_text_en")
         .eq("owner_id", currentSession.user.id)
+        .order("id", { ascending: true })
     );
     const existingByKey = new Map(
       (existingCards || []).map((c) => [
