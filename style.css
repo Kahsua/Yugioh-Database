@@ -511,6 +511,22 @@ input:focus, select:focus {
 .import-status { font-size: 0.8rem; color: var(--text-muted); margin: 0.5rem 0 0; font-family: var(--font-mono); }
 
 .import-results { margin-top: 1.5rem; border-top: 1px solid var(--panel-border); padding-top: 1.25rem; }
+
+.import-confirm { margin-top: 1.5rem; border-top: 1px solid var(--panel-border); padding-top: 1.25rem; }
+.import-confirm-title { font-family: var(--font-display); font-size: 1.05rem; margin: 0 0 0.9rem; }
+.import-confirm-list {
+  max-height: 260px; overflow-y: auto; margin: 1rem 0;
+  border: 1px solid var(--panel-border); border-radius: 8px;
+}
+.import-confirm-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
+  padding: 0.5rem 0.8rem; font-size: 0.82rem; border-bottom: 1px solid var(--panel-border);
+}
+.import-confirm-row:last-child { border-bottom: none; }
+.import-confirm-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-confirm-row .delta { font-family: var(--font-mono); color: var(--gold-soft); white-space: nowrap; }
+.import-confirm-more { padding: 0.6rem 0.8rem; font-size: 0.78rem; color: var(--text-muted); text-align: center; }
+.import-confirm-actions { display: flex; gap: 0.6rem; }
 .import-results-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.7rem; margin-bottom: 1rem; }
 .import-stat { background: var(--bg-alt); border-radius: 8px; padding: 0.75rem; text-align: center; }
 .import-stat .num { font-family: var(--font-mono); font-size: 1.4rem; font-weight: 700; color: var(--gold-soft); }

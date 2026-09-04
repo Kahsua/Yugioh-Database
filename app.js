@@ -933,6 +933,8 @@ $("#import-file").addEventListener("change", (e) => {
   if (!file) return;
   $("#file-drop-label").textContent = file.name;
   $("#import-results").classList.add("hidden");
+  $("#import-confirm").classList.add("hidden");
+  pendingImport = null;
 
   Papa.parse(file, {
     header: true,
@@ -972,6 +974,8 @@ $("#import-cancel-btn").addEventListener("click", () => {
   importCancelled = true;
 });
 
+let pendingImport = null; // { toInsert, toUpdate, notFound }
+
 async function runImport() {
   if (!importRows || !currentSession) return;
   importCancelled = false;
@@ -979,6 +983,7 @@ async function runImport() {
   $("#import-cancel-btn").classList.remove("hidden");
   $("#import-progress-wrap").classList.remove("hidden");
   $("#import-results").classList.add("hidden");
+  $("#import-confirm").classList.add("hidden");
   const statusEl = $("#import-status");
   const fillEl = $("#import-progress-fill");
 
@@ -1008,12 +1013,12 @@ async function runImport() {
 
     // Schritt 2: bereits vorhandene Karten des Nutzers laden (mit Pagination,
     // damit auch Sammlungen >1000 Karten vollständig geprüft werden), um
-    // Duplikate zu erkennen und ggf. fehlende Infos nachzutragen
+    // Duplikate zu erkennen und Anzahl/fehlende Infos zu aktualisieren
     statusEl.textContent = "Prüfe vorhandene Sammlung …";
     const { data: existingCards } = await fetchAllRows(() =>
       supabaseClient
         .from("cards")
-        .select("id, ygo_id, name_de, name_en, effect_text_de, effect_text_en")
+        .select("id, ygo_id, name_de, name_en, quantity, effect_text_de, effect_text_en")
         .eq("owner_id", currentSession.user.id)
     );
     const existingByKey = new Map(
@@ -1023,11 +1028,10 @@ async function runImport() {
       ])
     );
 
-    // Schritt 3: jede Zeile matchen
+    // Schritt 3: jede Zeile matchen (nur analysieren, noch NICHTS speichern)
     const toInsert = [];
-    const toEnrich = [];
+    const toUpdate = [];
     const notFound = [];
-    let skipped = 0;
 
     for (let i = 0; i < importRows.length; i++) {
       if (importCancelled) break;
@@ -1051,21 +1055,23 @@ async function runImport() {
       const deMatch = matched ? deById.get(matched.id) : null;
 
       if (existing) {
-        skipped++;
-        // Fehlende Zusatzinfos (z.B. Kartentext) bei bereits vorhandenen Karten nachtragen
+        // Karte bereits vorhanden: Anzahl aufaddieren statt zu überspringen,
+        // dabei gleich fehlende Zusatzinfos (z.B. Kartentext) mit nachtragen
         const missingDe = !existing.effect_text_de && deMatch && deMatch.desc;
         const missingEn = !existing.effect_text_en && matched && matched.desc;
-        if (missingDe || missingEn) {
-          toEnrich.push({
-            id: existing.id,
-            effect_text_de: missingDe ? deMatch.desc : existing.effect_text_de,
-            effect_text_en: missingEn ? matched.desc : existing.effect_text_en,
-            archetype: matched ? matched.archetype || null : null,
-            scale: matched ? matched.scale ?? null : null,
-            image_url: matched && matched.card_images && matched.card_images[0] ? matched.card_images[0].image_url : null,
-            ygo_id: matched ? matched.id : null,
-          });
-        }
+        toUpdate.push({
+          id: existing.id,
+          name: existing.name_de || existing.name_en,
+          qtyBefore: existing.quantity,
+          qtyAdd: qty,
+          qtyAfter: existing.quantity + qty,
+          effect_text_de: missingDe ? deMatch.desc : existing.effect_text_de,
+          effect_text_en: missingEn ? matched.desc : existing.effect_text_en,
+          archetype: matched ? matched.archetype || null : null,
+          scale: matched ? matched.scale ?? null : null,
+          image_url: matched && matched.card_images && matched.card_images[0] ? matched.card_images[0].image_url : null,
+          ygo_id: matched ? matched.id : existing.ygo_id,
+        });
         continue;
       }
 
@@ -1095,7 +1101,7 @@ async function runImport() {
       if (!matched) notFound.push(row.Deutsch || row.Englisch);
 
       if (i % 50 === 0) {
-        const pct = 15 + Math.round((i / importRows.length) * 55);
+        const pct = 15 + Math.round((i / importRows.length) * 70);
         fillEl.style.width = pct + "%";
         statusEl.textContent = `Gleiche Karten ab … (${i}/${importRows.length})`;
         await new Promise((r) => setTimeout(r, 0)); // UI nicht blockieren
@@ -1109,8 +1115,72 @@ async function runImport() {
       return;
     }
 
-    // Schritt 4: neue Karten in Batches speichern
-    fillEl.style.width = "70%";
+    fillEl.style.width = "100%";
+    $("#import-progress-wrap").classList.add("hidden");
+    $("#import-cancel-btn").classList.add("hidden");
+    $("#import-start-btn").disabled = false;
+
+    pendingImport = { toInsert, toUpdate, notFound };
+    showImportConfirmation(pendingImport);
+  } catch (err) {
+    statusEl.textContent = "Fehler: " + err.message;
+    $("#import-cancel-btn").classList.add("hidden");
+    $("#import-start-btn").disabled = false;
+  }
+}
+
+function showImportConfirmation({ toInsert, toUpdate }) {
+  $("#confirm-new-count").textContent = toInsert.length;
+  $("#confirm-update-count").textContent = toUpdate.length;
+  const totalDelta = toUpdate.reduce((sum, u) => sum + u.qtyAdd, 0);
+  $("#confirm-delta-count").textContent = "+" + totalDelta;
+
+  const listEl = $("#confirm-update-list");
+  listEl.innerHTML = "";
+  const previewLimit = 100;
+  toUpdate.slice(0, previewLimit).forEach((u) => {
+    const row = document.createElement("div");
+    row.className = "import-confirm-row";
+    row.innerHTML = `
+      <span class="name">${u.name}</span>
+      <span class="delta">${u.qtyBefore} → ${u.qtyAfter} (+${u.qtyAdd})</span>
+    `;
+    listEl.appendChild(row);
+  });
+  if (toUpdate.length > previewLimit) {
+    const more = document.createElement("div");
+    more.className = "import-confirm-more";
+    more.textContent = `… und ${toUpdate.length - previewLimit} weitere`;
+    listEl.appendChild(more);
+  }
+  if (toUpdate.length === 0) {
+    listEl.innerHTML = `<div class="import-confirm-more">Keine bereits vorhandenen Karten betroffen.</div>`;
+  }
+
+  $("#import-confirm").classList.remove("hidden");
+}
+
+$("#import-confirm-cancel-btn").addEventListener("click", () => {
+  pendingImport = null;
+  $("#import-confirm").classList.add("hidden");
+  $("#import-status").textContent = "Import abgebrochen.";
+});
+
+$("#import-confirm-btn").addEventListener("click", async () => {
+  if (!pendingImport) return;
+  await executeImport(pendingImport);
+  pendingImport = null;
+});
+
+async function executeImport({ toInsert, toUpdate, notFound }) {
+  $("#import-confirm").classList.add("hidden");
+  $("#import-progress-wrap").classList.remove("hidden");
+  const statusEl = $("#import-status");
+  const fillEl = $("#import-progress-fill");
+  fillEl.style.width = "0%";
+
+  try {
+    // Neue Karten in Batches speichern
     statusEl.textContent = `Speichere ${toInsert.length} neue Karten …`;
     const batchSize = 200;
     for (let i = 0; i < toInsert.length; i += batchSize) {
@@ -1118,29 +1188,30 @@ async function runImport() {
       if (batch.length === 0) continue;
       const { error } = await supabaseClient.from("cards").insert(batch);
       if (error) throw new Error("Fehler beim Speichern: " + error.message);
-      const pct = 70 + Math.round(((i + batch.length) / Math.max(toInsert.length, 1)) * 15);
+      const pct = Math.round(((i + batch.length) / Math.max(toInsert.length, 1)) * 50);
       fillEl.style.width = pct + "%";
       statusEl.textContent = `Speichere … (${Math.min(i + batch.length, toInsert.length)}/${toInsert.length})`;
     }
 
-    // Schritt 5: fehlende Infos bei bereits vorhandenen Karten ergänzen
-    if (toEnrich.length > 0) {
-      statusEl.textContent = `Ergänze Kartentext bei ${toEnrich.length} bereits vorhandenen Karten …`;
-      for (let i = 0; i < toEnrich.length; i++) {
-        const e = toEnrich[i];
+    // Bereits vorhandene Karten aktualisieren (Anzahl + fehlende Infos)
+    if (toUpdate.length > 0) {
+      statusEl.textContent = `Aktualisiere ${toUpdate.length} bereits vorhandene Karten …`;
+      for (let i = 0; i < toUpdate.length; i++) {
+        const u = toUpdate[i];
         await supabaseClient
           .from("cards")
           .update({
-            effect_text_de: e.effect_text_de,
-            effect_text_en: e.effect_text_en,
-            archetype: e.archetype,
-            scale: e.scale,
-            image_url: e.image_url,
-            ygo_id: e.ygo_id,
+            quantity: u.qtyAfter,
+            effect_text_de: u.effect_text_de,
+            effect_text_en: u.effect_text_en,
+            archetype: u.archetype,
+            scale: u.scale,
+            image_url: u.image_url,
+            ygo_id: u.ygo_id,
           })
-          .eq("id", e.id);
+          .eq("id", u.id);
         if (i % 50 === 0) {
-          const pct = 85 + Math.round((i / toEnrich.length) * 15);
+          const pct = 50 + Math.round((i / toUpdate.length) * 50);
           fillEl.style.width = pct + "%";
         }
       }
@@ -1148,16 +1219,18 @@ async function runImport() {
 
     fillEl.style.width = "100%";
     statusEl.textContent = "Import abgeschlossen!";
-    showResults(toInsert.length, skipped, notFound, toEnrich.length);
-    logHistory("import", `CSV-Import: ${toInsert.length} neu, ${toEnrich.length} ergänzt`, {});
+    showResults(toInsert.length, toUpdate.length, notFound);
+    const totalDelta = toUpdate.reduce((sum, u) => sum + u.qtyAdd, 0);
+    logHistory(
+      "import",
+      `CSV-Import: ${toInsert.length} neu, ${toUpdate.length} aktualisiert (+${totalDelta} Exemplare)`,
+      {}
+    );
     await refreshMyCardIndex();
     renderMineList();
     renderAllList();
   } catch (err) {
     statusEl.textContent = "Fehler: " + err.message;
-  } finally {
-    $("#import-cancel-btn").classList.add("hidden");
-    $("#import-start-btn").disabled = false;
   }
 }
 
@@ -1169,14 +1242,13 @@ function parseIntOrNull(v) {
   return Number.isNaN(n) ? null : n;
 }
 
-function showResults(insertedCount, skippedCount, notFound, enrichedCount) {
+function showResults(insertedCount, updatedCount, notFound) {
   const el = $("#import-results");
   el.classList.remove("hidden");
   el.innerHTML = `
     <div class="import-results-grid">
       <div class="import-stat"><div class="num">${insertedCount}</div><div class="label">neu importiert</div></div>
-      <div class="import-stat"><div class="num">${skippedCount}</div><div class="label">bereits vorhanden</div></div>
-      <div class="import-stat"><div class="num">${enrichedCount || 0}</div><div class="label">Kartentext ergänzt</div></div>
+      <div class="import-stat"><div class="num">${updatedCount}</div><div class="label">Anzahl aktualisiert</div></div>
       <div class="import-stat"><div class="num">${notFound.length}</div><div class="label">nicht in DB gefunden</div></div>
     </div>
     ${
@@ -1189,7 +1261,7 @@ function showResults(insertedCount, skippedCount, notFound, enrichedCount) {
         : ""
     }
   `;
-  showToast(`Import fertig: ${insertedCount} neue Karten gespeichert`);
+  showToast(`Import fertig: ${insertedCount} neu, ${updatedCount} aktualisiert`);
 }
 
 // ============================================================

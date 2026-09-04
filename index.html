@@ -17,7 +17,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=5" />
+<link rel="stylesheet" href="style.css?v=6" />
 </head>
 <body>
 
@@ -286,6 +286,23 @@
         <p id="import-status" class="import-status"></p>
       </div>
 
+      <!-- Bestätigungs-Übersicht: erscheint nach der Analyse, bevor irgendetwas
+           gespeichert wird - besonders wichtig bei erneutem Import, damit klar
+           ist, bei wie vielen bereits vorhandenen Karten sich die Anzahl ändert -->
+      <div id="import-confirm" class="import-confirm hidden">
+        <h3 class="import-confirm-title">Import-Vorschau - bitte prüfen</h3>
+        <div class="import-results-grid">
+          <div class="import-stat"><div class="num" id="confirm-new-count">0</div><div class="label">neue Karten</div></div>
+          <div class="import-stat"><div class="num" id="confirm-update-count">0</div><div class="label">werden aktualisiert</div></div>
+          <div class="import-stat"><div class="num" id="confirm-delta-count">0</div><div class="label">Exemplare zusätzlich</div></div>
+        </div>
+        <div id="confirm-update-list" class="import-confirm-list"></div>
+        <div class="import-confirm-actions">
+          <button id="import-confirm-btn" class="btn btn-primary">Import bestätigen</button>
+          <button id="import-confirm-cancel-btn" class="btn-ghost">Abbrechen</button>
+        </div>
+      </div>
+
       <div id="import-results" class="import-results hidden"></div>
     </div>
   </section>
@@ -363,6 +380,6 @@
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="config.js"></script>
-<script src="app.js?v=10"></script>
+<script src="app.js?v=11"></script>
 </body>
 </html>
