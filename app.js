@@ -1327,6 +1327,135 @@ function showResults(insertedCount, updatedCount, notFound) {
 }
 
 // ============================================================
+// REPARATUR: fehlende Übersetzungen ergänzen
+// ============================================================
+// Behebt nachträglich Karten, die durch den früheren Such-Bug nur mit einer
+// Sprache gespeichert wurden. Läuft komplett additiv (füllt nur leere Felder),
+// nutzt Batch-Upserts statt einzelner Updates pro Zeile, damit auch mehrere
+// tausend Karten in angemessener Zeit durchlaufen.
+$("#repair-start-btn").addEventListener("click", runRepair);
+
+async function runRepair() {
+  if (!supabaseClient || !currentSession) return;
+  const btn = $("#repair-start-btn");
+  btn.disabled = true;
+  $("#repair-progress-wrap").classList.remove("hidden");
+  $("#repair-results").classList.add("hidden");
+  const statusEl = $("#repair-status");
+  const fillEl = $("#repair-progress-fill");
+  fillEl.style.width = "5%";
+
+  try {
+    statusEl.textContent = "Lade deine Sammlung …";
+    const { data: myCards } = await fetchAllRows(() =>
+      supabaseClient
+        .from("cards")
+        .select("id, ygo_id, name_de, name_en, effect_text_de, effect_text_en, archetype, scale, image_url")
+        .eq("owner_id", currentSession.user.id)
+        .not("ygo_id", "is", null)
+        .order("id", { ascending: true })
+    );
+
+    const candidates = (myCards || []).filter(
+      (c) => !c.name_de || !c.name_en || !c.effect_text_de || !c.effect_text_en || !c.image_url
+    );
+
+    if (candidates.length === 0) {
+      fillEl.style.width = "100%";
+      statusEl.textContent = "Fertig - nichts zu reparieren gefunden.";
+      showRepairResults(0, 0);
+      btn.disabled = false;
+      return;
+    }
+
+    fillEl.style.width = "15%";
+    statusEl.textContent = `${candidates.length} lückenhafte Karten gefunden - lade aktuelle Daten …`;
+
+    // Fehlende Karten-Details in Batches per ID nachladen (DE + EN getrennt)
+    const ids = [...new Set(candidates.map((c) => c.ygo_id))];
+    const chunkSize = 40;
+    const enById = new Map();
+    const deById = new Map();
+    for (let i = 0; i < ids.length; i += chunkSize) {
+      const chunk = ids.slice(i, i + chunkSize);
+      const [enData, deData] = await Promise.all([fetchByIds(chunk, "en"), fetchByIds(chunk, "de")]);
+      enData.forEach((c) => enById.set(c.id, c));
+      deData.forEach((c) => deById.set(c.id, c));
+      const pct = 15 + Math.round(((i + chunk.length) / ids.length) * 45);
+      fillEl.style.width = pct + "%";
+    }
+
+    fillEl.style.width = "60%";
+    statusEl.textContent = "Ergänze fehlende Felder …";
+
+    // Nur die Zeilen sammeln, bei denen sich tatsächlich etwas ändert
+    const updates = [];
+    let fieldCount = 0;
+    candidates.forEach((c) => {
+      const en = enById.get(c.ygo_id);
+      const de = deById.get(c.ygo_id);
+      // owner_id + name_en immer mitschicken: beides NOT-NULL-Felder ohne
+      // Standardwert - der Upsert-Mechanismus baut intern eine vollständige
+      // Zeile auf, auch wenn am Ende nur ein UPDATE der bestehenden Zeile passiert.
+      const patch = {
+        id: c.id,
+        owner_id: currentSession.user.id,
+        name_en: c.name_en || (en ? en.name : c.name_de),
+      };
+      let changed = false;
+
+      if (!c.name_de && de) { patch.name_de = de.name; changed = true; fieldCount++; }
+      if (!c.name_en && en) { patch.name_en = en.name; changed = true; fieldCount++; }
+      if (!c.effect_text_de && de) { patch.effect_text_de = de.desc; changed = true; fieldCount++; }
+      if (!c.effect_text_en && en) { patch.effect_text_en = en.desc; changed = true; fieldCount++; }
+      if (!c.archetype && en && en.archetype) { patch.archetype = en.archetype; changed = true; fieldCount++; }
+      if (!c.scale && en && en.scale != null) { patch.scale = en.scale; changed = true; fieldCount++; }
+      if (!c.image_url && (en || de)) {
+        const src = en || de;
+        const img = src.card_images && src.card_images[0] ? src.card_images[0].image_url : null;
+        if (img) { patch.image_url = img; changed = true; fieldCount++; }
+      }
+
+      if (changed) updates.push(patch);
+    });
+
+    // In Batches per Upsert speichern (deutlich schneller als einzelne Updates)
+    const batchSize = 200;
+    for (let i = 0; i < updates.length; i += batchSize) {
+      const batch = updates.slice(i, i + batchSize);
+      const { error } = await supabaseClient.from("cards").upsert(batch, { onConflict: "id" });
+      if (error) throw new Error("Fehler beim Speichern: " + error.message);
+      const pct = 60 + Math.round(((i + batch.length) / Math.max(updates.length, 1)) * 40);
+      fillEl.style.width = pct + "%";
+      statusEl.textContent = `Speichere … (${Math.min(i + batch.length, updates.length)}/${updates.length})`;
+    }
+
+    fillEl.style.width = "100%";
+    statusEl.textContent = "Reparatur abgeschlossen!";
+    showRepairResults(updates.length, fieldCount);
+    logHistory("import", `Reparatur: ${updates.length} Karten ergänzt (${fieldCount} Felder)`, {});
+    await refreshMyCardIndex();
+    renderMineList();
+    renderAllList();
+  } catch (err) {
+    statusEl.textContent = "Fehler: " + err.message;
+  }
+  btn.disabled = false;
+}
+
+function showRepairResults(repairedCount, fieldCount) {
+  const el = $("#repair-results");
+  el.classList.remove("hidden");
+  el.innerHTML = `
+    <div class="import-results-grid">
+      <div class="import-stat"><div class="num">${repairedCount}</div><div class="label">Karten ergänzt</div></div>
+      <div class="import-stat"><div class="num">${fieldCount}</div><div class="label">Felder aufgefüllt</div></div>
+    </div>
+  `;
+  showToast(`Reparatur fertig: ${repairedCount} Karten ergänzt`);
+}
+
+// ============================================================
 // SCANNEN (Kamera + OCR über Tesseract.js)
 // ============================================================
 let scanStream = null;

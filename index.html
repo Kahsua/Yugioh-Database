@@ -305,6 +305,26 @@
 
       <div id="import-results" class="import-results hidden"></div>
     </div>
+
+    <!-- ===================== REPARATUR: fehlende Übersetzungen ===================== -->
+    <div class="scan-panel">
+      <h2 class="import-title">Fehlende Übersetzungen reparieren</h2>
+      <div class="frieze-rule frieze-rule-left"></div>
+      <p class="import-desc">
+        Prüft deine gesamte Sammlung auf Karten, die nur in einer Sprache gespeichert
+        sind (z.B. durch einen früheren Such-Bug entstanden) und ergänzt automatisch
+        den fehlenden Namen sowie Kartentext. Die Anzahl bleibt dabei unverändert -
+        es werden ausschließlich leere Felder aufgefüllt, nie bestehende überschrieben.
+      </p>
+      <button id="repair-start-btn" class="btn btn-primary">Reparatur starten</button>
+
+      <div id="repair-progress-wrap" class="import-progress-wrap hidden">
+        <div class="import-progress-bar"><div id="repair-progress-fill" class="import-progress-fill"></div></div>
+        <p id="repair-status" class="import-status"></p>
+      </div>
+
+      <div id="repair-results" class="import-results hidden"></div>
+    </div>
   </section>
 
 </div>
@@ -380,6 +400,6 @@
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="config.js"></script>
-<script src="app.js?v=13"></script>
+<script src="app.js?v=14"></script>
 </body>
 </html>
