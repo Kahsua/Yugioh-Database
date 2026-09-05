@@ -310,14 +310,34 @@ async function fetchYgo(query, lang) {
   }
 }
 
+// Holt gezielt bestimmte Karten per ID (statt per Namenssuche) - genutzt, um
+// die jeweils fehlende Sprache nachzuladen, wenn eine Karte nur in einer
+// Sprache gefunden wurde (siehe runSearch).
+async function fetchByIds(ids, lang) {
+  if (!ids || ids.length === 0) return [];
+  let url = `${YGO_API}?id=${ids.join(",")}`;
+  if (lang === "de") url += "&language=de";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.data || [];
+  } catch {
+    return [];
+  }
+}
+
 async function runSearch(query, statusSel, resultsSel) {
   statusSel = statusSel || "#search-status";
   resultsSel = resultsSel || "#search-results";
   $(statusSel).textContent = "Suche läuft …";
   $(resultsSel).innerHTML = "";
 
-  // Suche parallel in Deutsch (übersetzte Namen) und Englisch (kanonische Daten),
-  // damit wir für jede Karte beide Namen + zuverlässige Stat-Felder haben.
+  // Suche parallel in Deutsch (übersetzte Namen) und Englisch (kanonische Daten).
+  // Wichtig: Wenn z.B. ein deutscher Name eingegeben wird, findet die englische
+  // Namenssuche mit demselben Text normalerweise NICHTS (andere Sprache!) -
+  // das bedeutet nicht, dass die Karte keinen englischen Namen hat, nur dass
+  // die Suche in der falschen Sprache lief. Das wird unten per ID nachgeholt.
   const [deResults, enResults] = await Promise.all([
     fetchYgo(query, "de"),
     fetchYgo(query, "en"),
@@ -329,6 +349,27 @@ async function runSearch(query, statusSel, resultsSel) {
     if (byId.has(c.id)) byId.get(c.id).de = c;
     else byId.set(c.id, { en: null, de: c });
   });
+
+  // Für jede Karte, die nur in EINER Sprache gefunden wurde: die andere Sprache
+  // gezielt per ID nachladen (statt erneut per - falscher - Namenssuche).
+  const missingDeIds = [];
+  const missingEnIds = [];
+  byId.forEach((v, id) => {
+    if (!v.de) missingDeIds.push(id);
+    if (!v.en) missingEnIds.push(id);
+  });
+  if (missingDeIds.length > 0 || missingEnIds.length > 0) {
+    const [fetchedDe, fetchedEn] = await Promise.all([
+      fetchByIds(missingDeIds, "de"),
+      fetchByIds(missingEnIds, "en"),
+    ]);
+    fetchedDe.forEach((c) => {
+      if (byId.has(c.id)) byId.get(c.id).de = c;
+    });
+    fetchedEn.forEach((c) => {
+      if (byId.has(c.id)) byId.get(c.id).en = c;
+    });
+  }
 
   const merged = Array.from(byId.values()).map(({ en, de }) => {
     const canonical = en || de; // englische Version bevorzugt für Typ/Werte
@@ -480,9 +521,22 @@ $("#modal-save").addEventListener("click", async () => {
       .update({
         quantity: newQty,
         ygo_id: modalCard.id, // jetzt sicher bekannt, ggf. nachtragen
+        // Name/Typ/Werte werden bei jedem erneuten Hinzufügen aufgefrischt -
+        // behebt u.a. Fälle, in denen die Karte zuvor nur mit einer Sprache
+        // gespeichert wurde (siehe runSearch-Fix) und jetzt vervollständigt wird.
+        name_de: modalCard.name_de || null,
+        name_en: modalCard.name_en,
+        card_type: modalCard.type,
+        attribute: modalCard.attribute,
+        race: modalCard.race,
+        atk: modalCard.atk,
+        def: modalCard.def,
+        level: modalCard.level,
         image_url: modalCard.image,
         effect_text_de: modalCard.desc_de || null,
         effect_text_en: modalCard.desc_en || null,
+        archetype: modalCard.archetype || null,
+        scale: modalCard.scale ?? null,
       })
       .eq("id", existing.id));
     if (!error) {
@@ -1058,7 +1112,9 @@ async function runImport() {
 
       if (existing) {
         // Karte bereits vorhanden: Anzahl aufaddieren statt zu überspringen,
-        // dabei gleich fehlende Zusatzinfos (z.B. Kartentext) mit nachtragen
+        // dabei gleich fehlende Zusatzinfos (Kartentext UND fehlende Namen in
+        // einer Sprache - kann durch einen früheren Suche-Bug entstanden sein)
+        // mit nachtragen
         const missingDe = !existing.effect_text_de && deMatch && deMatch.desc;
         const missingEn = !existing.effect_text_en && matched && matched.desc;
         toUpdate.push({
@@ -1067,6 +1123,8 @@ async function runImport() {
           qtyBefore: existing.quantity,
           qtyAdd: qty,
           qtyAfter: existing.quantity + qty,
+          name_de: existing.name_de || (deMatch ? deMatch.name : null),
+          name_en: existing.name_en || (matched ? matched.name : null),
           effect_text_de: missingDe ? deMatch.desc : existing.effect_text_de,
           effect_text_en: missingEn ? matched.desc : existing.effect_text_en,
           archetype: matched ? matched.archetype || null : null,
@@ -1204,6 +1262,8 @@ async function executeImport({ toInsert, toUpdate, notFound }) {
           .from("cards")
           .update({
             quantity: u.qtyAfter,
+            name_de: u.name_de,
+            name_en: u.name_en,
             effect_text_de: u.effect_text_de,
             effect_text_en: u.effect_text_en,
             archetype: u.archetype,
