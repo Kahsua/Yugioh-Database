@@ -260,7 +260,10 @@ $all(".tab").forEach((tab) => {
     if (view === "all") renderAllList();
     if (view === "history") renderHistory();
     if (view === "scan") ensureCardDbLoaded();
-    if (view === "collect") refreshMyCardIndex();
+    if (view === "collect") {
+      refreshMyCardIndex();
+      ensureArchetypeListLoaded();
+    }
   });
 });
 
@@ -297,6 +300,14 @@ $("#search-input").addEventListener(
   }, 400)
 );
 
+$("#archetype-search-btn").addEventListener("click", () => {
+  const val = $("#archetype-search-input").value.trim();
+  if (val) runArchetypeSearch(val, "#search-status", "#search-results");
+});
+$("#archetype-search-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("#archetype-search-btn").click();
+});
+
 async function fetchYgo(query, lang) {
   let url = `${YGO_API}?fname=${encodeURIComponent(query)}&num=20&offset=0`;
   if (lang === "de") url += "&language=de";
@@ -310,9 +321,23 @@ async function fetchYgo(query, lang) {
   }
 }
 
+// Wie fetchYgo, aber filtert nach Archetyp statt nach Namen.
+async function fetchYgoByArchetype(archetype, lang) {
+  let url = `${YGO_API}?archetype=${encodeURIComponent(archetype)}&num=100&offset=0`;
+  if (lang === "de") url += "&language=de";
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.data || [];
+  } catch {
+    return [];
+  }
+}
+
 // Holt gezielt bestimmte Karten per ID (statt per Namenssuche) - genutzt, um
 // die jeweils fehlende Sprache nachzuladen, wenn eine Karte nur in einer
-// Sprache gefunden wurde (siehe runSearch).
+// Sprache gefunden wurde (siehe mergeDualLanguageResults).
 async function fetchByIds(ids, lang) {
   if (!ids || ids.length === 0) return [];
   let url = `${YGO_API}?id=${ids.join(",")}`;
@@ -327,22 +352,14 @@ async function fetchByIds(ids, lang) {
   }
 }
 
-async function runSearch(query, statusSel, resultsSel) {
-  statusSel = statusSel || "#search-status";
-  resultsSel = resultsSel || "#search-results";
-  $(statusSel).textContent = "Suche läuft …";
-  $(resultsSel).innerHTML = "";
-
-  // Suche parallel in Deutsch (übersetzte Namen) und Englisch (kanonische Daten).
-  // Wichtig: Wenn z.B. ein deutscher Name eingegeben wird, findet die englische
-  // Namenssuche mit demselben Text normalerweise NICHTS (andere Sprache!) -
-  // das bedeutet nicht, dass die Karte keinen englischen Namen hat, nur dass
-  // die Suche in der falschen Sprache lief. Das wird unten per ID nachgeholt.
-  const [deResults, enResults] = await Promise.all([
-    fetchYgo(query, "de"),
-    fetchYgo(query, "en"),
-  ]);
-
+// Führt deutsche und englische Suchergebnisse zu einer gemeinsamen Liste
+// zusammen. Wichtig: Wenn z.B. ein deutscher Name/Archetyp eingegeben wird,
+// findet die englische Suche mit demselben Text normalerweise NICHTS (andere
+// Sprache!) - das bedeutet nicht, dass die Karte keinen englischen Namen hat,
+// nur dass die Suche in der falschen Sprache lief. Das wird unten per
+// gezielter ID-Abfrage nachgeholt. Wird sowohl von der Namens- als auch der
+// Archetyp-Suche genutzt.
+async function mergeDualLanguageResults(deResults, enResults) {
   const byId = new Map();
   enResults.forEach((c) => byId.set(c.id, { en: c, de: null }));
   deResults.forEach((c) => {
@@ -350,8 +367,6 @@ async function runSearch(query, statusSel, resultsSel) {
     else byId.set(c.id, { en: null, de: c });
   });
 
-  // Für jede Karte, die nur in EINER Sprache gefunden wurde: die andere Sprache
-  // gezielt per ID nachladen (statt erneut per - falscher - Namenssuche).
   const missingDeIds = [];
   const missingEnIds = [];
   byId.forEach((v, id) => {
@@ -371,7 +386,7 @@ async function runSearch(query, statusSel, resultsSel) {
     });
   }
 
-  const merged = Array.from(byId.values()).map(({ en, de }) => {
+  return Array.from(byId.values()).map(({ en, de }) => {
     const canonical = en || de; // englische Version bevorzugt für Typ/Werte
     return {
       id: canonical.id,
@@ -390,6 +405,19 @@ async function runSearch(query, statusSel, resultsSel) {
       image: canonical.card_images && canonical.card_images[0] ? canonical.card_images[0].image_url : "",
     };
   });
+}
+
+async function runSearch(query, statusSel, resultsSel) {
+  statusSel = statusSel || "#search-status";
+  resultsSel = resultsSel || "#search-results";
+  $(statusSel).textContent = "Suche läuft …";
+  $(resultsSel).innerHTML = "";
+
+  const [deResults, enResults] = await Promise.all([
+    fetchYgo(query, "de"),
+    fetchYgo(query, "en"),
+  ]);
+  const merged = await mergeDualLanguageResults(deResults, enResults);
 
   if (merged.length === 0) {
     $(statusSel).textContent = "Keine Karten gefunden.";
@@ -397,6 +425,53 @@ async function runSearch(query, statusSel, resultsSel) {
   }
   $(statusSel).textContent = `${merged.length} Treffer`;
   renderSearchResults(merged, resultsSel);
+}
+
+async function runArchetypeSearch(archetype, statusSel, resultsSel) {
+  statusSel = statusSel || "#search-status";
+  resultsSel = resultsSel || "#search-results";
+  $(statusSel).textContent = "Suche läuft …";
+  $(resultsSel).innerHTML = "";
+
+  const [deResults, enResults] = await Promise.all([
+    fetchYgoByArchetype(archetype, "de"),
+    fetchYgoByArchetype(archetype, "en"),
+  ]);
+  const merged = await mergeDualLanguageResults(deResults, enResults);
+
+  if (merged.length === 0) {
+    $(statusSel).textContent = `Keine Karten für den Archetyp "${archetype}" gefunden.`;
+    return;
+  }
+  $(statusSel).textContent = `${merged.length} Karten im Archetyp "${archetype}"`;
+  renderSearchResults(merged, resultsSel);
+}
+
+// ============================================================
+// ARCHETYP-LISTE (für die Autovervollständigung bei der Archetyp-Suche)
+// ============================================================
+let archetypeListCache = null;
+
+async function ensureArchetypeListLoaded() {
+  if (archetypeListCache) return archetypeListCache;
+  try {
+    const res = await fetch("https://db.ygoprodeck.com/api/v7/archetypes.php");
+    const json = await res.json();
+    archetypeListCache = (json || [])
+      .map((a) => a.archetype_name)
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b));
+  } catch {
+    archetypeListCache = [];
+  }
+  populateDatalist("#archetype-datalist", archetypeListCache);
+  return archetypeListCache;
+}
+
+function populateDatalist(selector, values) {
+  const dl = $(selector);
+  if (!dl) return;
+  dl.innerHTML = values.map((v) => `<option value="${v.replace(/"/g, "&quot;")}"></option>`).join("");
 }
 
 // ============================================================
@@ -607,6 +682,7 @@ async function renderMineList() {
   populateFilterOptionsByCategory("#mine-monster-type-filter", data, "monster", "Monstertyp …");
   populateFilterOptionsByCategory("#mine-spell-type-filter", data, "spell", "Zaubertyp …");
   populateFilterOptionsByCategory("#mine-trap-type-filter", data, "trap", "Fallentyp …");
+  populateDatalistFromField("#mine-archetype-datalist", data, "archetype");
 
   const filtered = applyFilters(data, {
     text: $("#mine-filter").value,
@@ -615,6 +691,7 @@ async function renderMineList() {
     monsterType: $("#mine-monster-type-filter").value,
     spellType: $("#mine-spell-type-filter").value,
     trapType: $("#mine-trap-type-filter").value,
+    archetype: $("#mine-archetype-filter").value,
   });
 
   const totalCount = data.reduce((sum, c) => sum + c.quantity, 0);
@@ -626,6 +703,7 @@ async function renderMineList() {
 $("#mine-filter").addEventListener("input", debounce(renderMineList, 200));
 $("#mine-category-filter").addEventListener("change", renderMineList);
 $("#mine-attribute-filter").addEventListener("change", renderMineList);
+$("#mine-archetype-filter").addEventListener("input", debounce(renderMineList, 200));
 [
   ["#mine-monster-type-filter", "#mine-spell-type-filter", "#mine-trap-type-filter"],
 ].forEach((group) => wireExclusiveTypeFilters(group, renderMineList));
@@ -661,6 +739,7 @@ async function renderAllList() {
   populateFilterOptionsByCategory("#all-monster-type-filter", data, "monster", "Monstertyp …");
   populateFilterOptionsByCategory("#all-spell-type-filter", data, "spell", "Zaubertyp …");
   populateFilterOptionsByCategory("#all-trap-type-filter", data, "trap", "Fallentyp …");
+  populateDatalistFromField("#all-archetype-datalist", data, "archetype");
 
   const filtered = applyFilters(data, {
     text: $("#all-filter").value,
@@ -669,6 +748,7 @@ async function renderAllList() {
     monsterType: $("#all-monster-type-filter").value,
     spellType: $("#all-spell-type-filter").value,
     trapType: $("#all-trap-type-filter").value,
+    archetype: $("#all-archetype-filter").value,
     owner: ownerSelect.value,
   });
 
@@ -679,6 +759,7 @@ async function renderAllList() {
 }
 
 $("#all-filter").addEventListener("input", debounce(renderAllList, 200));
+$("#all-archetype-filter").addEventListener("input", debounce(renderAllList, 200));
 ["#all-owner-filter", "#all-category-filter", "#all-attribute-filter"].forEach((sel) =>
   $(sel).addEventListener("change", renderAllList)
 );
@@ -724,6 +805,14 @@ function populateFilterOptionsByCategory(selectSel, data, category, placeholderT
   select.value = current;
 }
 
+// Befüllt ein <datalist> mit den eindeutigen Werten eines Feldes (z.B.
+// Archetypen), die in den Daten tatsächlich vorkommen - für Freitextfelder
+// mit Autovervollständigung.
+function populateDatalistFromField(datalistSel, data, field) {
+  const values = [...new Set(data.map((c) => c[field]).filter(Boolean))].sort((a, b) => a.localeCompare(b, "de"));
+  populateDatalist(datalistSel, values);
+}
+
 // Die drei Typ-Dropdowns (Monster/Zauber/Falle) schließen sich gegenseitig aus:
 // Wählt man in einem einen Wert, werden die beiden anderen zurückgesetzt.
 function wireExclusiveTypeFilters(selectors, onChange) {
@@ -737,8 +826,9 @@ function wireExclusiveTypeFilters(selectors, onChange) {
   });
 }
 
-function applyFilters(data, { text, category, attribute, monsterType, spellType, trapType, owner }) {
+function applyFilters(data, { text, category, attribute, monsterType, spellType, trapType, archetype, owner }) {
   const textVal = (text || "").toLowerCase();
+  const archetypeVal = (archetype || "").toLowerCase();
   return data.filter((c) => {
     const cat = typeCategory(c.card_type);
     const matchesText =
@@ -751,6 +841,7 @@ function applyFilters(data, { text, category, attribute, monsterType, spellType,
     const matchesMonsterType = !monsterType || (cat === "monster" && c.race === monsterType);
     const matchesSpellType = !spellType || (cat === "spell" && c.race === spellType);
     const matchesTrapType = !trapType || (cat === "trap" && c.race === trapType);
+    const matchesArchetype = !archetypeVal || (c.archetype || "").toLowerCase().includes(archetypeVal);
     const matchesOwner = !owner || c.owner_id === owner;
     return (
       matchesText &&
@@ -759,6 +850,7 @@ function applyFilters(data, { text, category, attribute, monsterType, spellType,
       matchesMonsterType &&
       matchesSpellType &&
       matchesTrapType &&
+      matchesArchetype &&
       matchesOwner
     );
   });

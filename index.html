@@ -126,6 +126,14 @@
         </div>
       </div>
       <p class="search-hint">Tipp: Mindestens 3 Zeichen eingeben. Die Suche durchsucht beide Sprachen automatisch.</p>
+
+      <div class="frieze-rule frieze-rule-left"></div>
+      <div class="search-row">
+        <input type="text" id="archetype-search-input" list="archetype-datalist" placeholder="Archetyp durchsuchen, z.B. Blue-Eyes …" autocomplete="off" />
+        <datalist id="archetype-datalist"></datalist>
+        <button id="archetype-search-btn" class="btn btn-primary">Archetyp suchen</button>
+      </div>
+      <p class="search-hint">Zeigt alle Karten eines Archetyps - auch solche, die du noch nicht besitzt.</p>
     </div>
 
     <div id="search-status" class="search-status"></div>
@@ -221,6 +229,8 @@
       <select id="mine-monster-type-filter"><option value="">Monstertyp …</option></select>
       <select id="mine-spell-type-filter"><option value="">Zaubertyp …</option></select>
       <select id="mine-trap-type-filter"><option value="">Fallentyp …</option></select>
+      <input type="text" id="mine-archetype-filter" list="mine-archetype-datalist" placeholder="Archetyp filtern …" />
+      <datalist id="mine-archetype-datalist"></datalist>
       <span class="toolbar-stat" id="mine-count"></span>
     </div>
     <div id="mine-list" class="card-list"></div>
@@ -243,6 +253,8 @@
       <select id="all-monster-type-filter"><option value="">Monstertyp …</option></select>
       <select id="all-spell-type-filter"><option value="">Zaubertyp …</option></select>
       <select id="all-trap-type-filter"><option value="">Fallentyp …</option></select>
+      <input type="text" id="all-archetype-filter" list="all-archetype-datalist" placeholder="Archetyp filtern …" />
+      <datalist id="all-archetype-datalist"></datalist>
       <span class="toolbar-stat" id="all-count"></span>
     </div>
     <div id="all-list" class="card-list"></div>
@@ -400,6 +412,6 @@
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="config.js"></script>
-<script src="app.js?v=14"></script>
+<script src="app.js?v=15"></script>
 </body>
 </html>
