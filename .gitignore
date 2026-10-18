@@ -1,0 +1,8 @@
+# Backup-Daten bleiben lokal – nur der Zeitstempel kommt ins Repo
+backup/*
+!backup/last-backup.json
+*.enc
+wiederhergestellt/
+
+# Passwort für die verschlüsselten Backups (auch als GitHub-Secret BACKUP_PASSWORD hinterlegt)
+backup-passwort.txt

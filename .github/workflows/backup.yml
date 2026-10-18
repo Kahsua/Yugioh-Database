@@ -1,0 +1,42 @@
+# Wöchentliches Backup der Supabase-Daten (siehe scripts/backup.mjs).
+# Die Daten werden verschlüsselt (Secret BACKUP_PASSWORD) und als Download
+# am Workflow-Lauf abgelegt (90 Tage). Ins Repo kommt nur backup/last-backup.json –
+# dieser Commit hält das Repo aktiv, damit GitHub die zeitgesteuerten Workflows
+# nicht nach 60 Tagen ohne Commit abschaltet.
+name: Supabase Backup
+on:
+  schedule:
+    - cron: "43 3 * * 1"   # montags
+  workflow_dispatch: {}
+permissions:
+  contents: write
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Daten exportieren und verschlüsseln
+        run: |
+          node scripts/backup.mjs
+          echo "STAMP=$(date -u +%Y-%m-%d)" >> "$GITHUB_ENV"
+          node scripts/backup-crypt.mjs encrypt backup "backup-$(date -u +%Y-%m-%d).enc"
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          BACKUP_PASSWORD: ${{ secrets.BACKUP_PASSWORD }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: backup-${{ env.STAMP }}
+          path: backup-${{ env.STAMP }}.enc
+          retention-days: 90
+          if-no-files-found: error
+      - name: Zeitstempel committen
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backup/last-backup.json
+          git commit -m "Backup $STAMP" || exit 0
+          git push
