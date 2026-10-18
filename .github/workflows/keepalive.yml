@@ -1,0 +1,17 @@
+# Verhindert, dass Supabase (Free) das Projekt nach 7 Tagen Inaktivität pausiert.
+# Einrichtung: GitHub-Repo -> Settings -> Secrets and variables -> Actions ->
+# Secrets "SUPABASE_URL" und "SUPABASE_ANON_KEY" anlegen (gleiche Werte wie config.js).
+name: Supabase Keepalive
+on:
+  schedule:
+    - cron: "17 6 */3 * *"   # alle 3 Tage
+  workflow_dispatch: {}
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Datenbank anpingen
+        run: |
+          curl -fsS "${{ secrets.SUPABASE_URL }}/rest/v1/profiles?select=id&limit=1" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}"
