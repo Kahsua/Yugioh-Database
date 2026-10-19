@@ -640,6 +640,11 @@ input:focus, select:focus {
 .scan-review-row .review-name-input { font-size: 0.85rem; padding: 0.4rem 0.6rem; }
 .scan-review-row .review-meta { font-size: 0.72rem; color: var(--text-muted); }
 .scan-review-row .review-qty { width: 58px; text-align: center; }
+.scan-review-row.needs-check { border-color: var(--gold); box-shadow: inset 3px 0 0 var(--gold); }
+.scan-review-row .review-photo { width: 30px; height: 44px; opacity: 0.85; }
+.scan-review-row .review-alt { font-size: 0.78rem; padding: 0.3rem 0.5rem; max-width: 100%; }
+.scan-queue-item .status-unsure { color: var(--gold-soft); font-weight: 700; font-size: 1.2rem; }
+.result-card.result-card-best { outline: 2px solid var(--gold); outline-offset: 2px; }
 .scan-review-actions { display: flex; gap: 0.6rem; }
 
 /* ============================================================

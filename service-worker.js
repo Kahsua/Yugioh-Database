@@ -3,12 +3,13 @@
 // NICHT die Kartendaten (die kommen live von Supabase/YGOPRODeck und sollen
 // immer aktuell sein).
 
-const CACHE_NAME = "kartenarchiv-shell-v3";
+const CACHE_NAME = "kartenarchiv-shell-v4";
 const SHELL_FILES = [
   "./",
   "./index.html",
   "./style.css",
   "./app.js",
+  "./scan-engine.js",
   "./config.js",
   "./manifest.json",
   "./icons/icon-192.png",
@@ -36,6 +37,9 @@ self.addEventListener("activate", (event) => {
 // (z.B. damit die App-Hülle auch offline kurz startet).
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+  // Nur eigene Dateien cachen - Kartendaten von YGOPRODeck/Supabase laufen direkt
+  // (die große Kartendatenbank cached app.js selbst, siehe fetchFullYgoDatabase).
+  if (new URL(event.request.url).origin !== self.location.origin) return;
   event.respondWith(
     fetch(event.request)
       .then((response) => {

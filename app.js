@@ -1107,13 +1107,48 @@ function normalizeName(s) {
   return (s || "").toString().trim().toLowerCase();
 }
 
+// Die komplette Datenbank ist ~20 MB pro Sprache - deshalb im Browser
+// zwischenspeichern (Cache API) statt bei jedem Start neu zu laden.
+// Nach CARD_DB_MAX_AGE_MS wird neu geladen (neue Karten); ohne Netz wird
+// notfalls auch eine ältere Kopie verwendet.
+const CARD_DB_CACHE = "ygo-carddb-v1";
+const CARD_DB_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
+
 async function fetchFullYgoDatabase(lang) {
   let url = YGO_API;
   if (lang === "de") url += "?language=de";
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("YGOPRODeck-Datenbank konnte nicht geladen werden");
-  const json = await res.json();
-  return json.data || [];
+
+  let cache = null;
+  let cached = null;
+  try {
+    cache = await caches.open(CARD_DB_CACHE);
+    cached = await cache.match(url);
+  } catch (err) {
+    // Cache API nicht verfügbar (z.B. kein https) - einfach direkt laden
+  }
+  const cachedAt = cached ? Number(cached.headers.get("x-cached-at")) || 0 : 0;
+  if (cached && Date.now() - cachedAt < CARD_DB_MAX_AGE_MS) {
+    try {
+      return (await cached.clone().json()).data || [];
+    } catch (err) {
+      // beschädigter Eintrag - neu laden
+    }
+  }
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("YGOPRODeck-Datenbank konnte nicht geladen werden");
+    const text = await res.text();
+    if (cache) {
+      cache
+        .put(url, new Response(text, { headers: { "content-type": "application/json", "x-cached-at": String(Date.now()) } }))
+        .catch(() => {});
+    }
+    return JSON.parse(text).data || [];
+  } catch (err) {
+    if (cached) return (await cached.json()).data || [];
+    throw err;
+  }
 }
 
 $("#import-start-btn").addEventListener("click", runImport);
@@ -1583,9 +1618,16 @@ $("#scan-name-input").addEventListener("keydown", (e) => {
 
 async function startScanCamera() {
   $("#scan-status").textContent = "Kamera wird gestartet …";
+  ensureCardDbLoaded().catch(() => {}); // Kartendatenbank parallel vorladen
   try {
     scanStream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: "environment" } },
+      video: {
+        facingMode: { ideal: "environment" },
+        // Ohne Auflösungswunsch liefern viele Handys nur 640x480 - zu wenig
+        // für den Kartennamen und erst recht für Set-Code/Passcode.
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
       audio: false,
     });
   } catch (err) {
@@ -1593,6 +1635,18 @@ async function startScanCamera() {
       "Kamera-Zugriff nicht möglich (" + err.message + "). Bitte Kamera-Berechtigung im Browser erlauben.";
     return null;
   }
+
+  // Dauer-Autofokus, wo das Gerät es unterstützt (sonst einfach ignorieren)
+  try {
+    const track = scanStream.getVideoTracks()[0];
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.focusMode && caps.focusMode.includes("continuous")) {
+      await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+    }
+  } catch (err) {
+    // Fokus-Steuerung nicht verfügbar - Kamera läuft trotzdem
+  }
+
   const video = $("#scan-video");
   video.srcObject = scanStream;
   video.classList.remove("hidden");
@@ -1600,6 +1654,7 @@ async function startScanCamera() {
   $("#scan-card-guide").classList.remove("hidden");
   $("#scan-start-btn").classList.add("hidden");
   $("#scan-capture-btn").classList.remove("hidden");
+  $("#scan-capture-btn").disabled = false;
   $("#scan-status").textContent = "Karte im Rahmen ausrichten, dann Foto aufnehmen.";
   return scanStream;
 }
@@ -1612,14 +1667,11 @@ function stopScanCamera() {
 }
 
 // ============================================================
-// BILDAUSSCHNITT & VORVERARBEITUNG (für bessere Texterkennung)
+// BILDAUSSCHNITT DER KARTE
 // ============================================================
-
-// Der Kartenname steht bei Yu-Gi-Oh-Karten immer im selben Bereich oben auf
-// der Karte. Statt das ganze Kamerabild (inkl. Hintergrund) zu erkennen,
-// schneiden wir gezielt diesen Bereich aus - in mehreren Varianten
-// (siehe bestGuessFromCard), damit kleine Abweichungen bei der
-// Kartenausrichtung nicht zum Totalausfall führen.
+// Die Karte wird über den gestrichelten Ausrichtrahmen gefunden: alles
+// innerhalb des Rahmens gilt als Karte. Aus diesem Kartenbild werden dann
+// Name, Set-Code und Passcode an ihren festen Positionen ausgeschnitten.
 
 // Rechnet die Position des sichtbaren Ausrichtrahmens (CSS-Pixel) auf die
 // tatsächlichen Quellpixel des Kamera-Streams um - notwendig, weil das
@@ -1653,185 +1705,147 @@ function getCoverSourceRect(video, displayRect, videoRect) {
   };
 }
 
-// Schneidet aus dem Live-Video genau den Bereich innerhalb des
-// Ausrichtrahmens aus - das Ergebnis ist (bei korrekter Ausrichtung) exakt
-// die fotografierte Karte, ohne Hintergrund.
+// Ausrichtrahmen als Anteile (0..1) des Kamerabilds - damit lässt er sich
+// auch auf ein Foto mit höherer Auflösung übertragen.
+function getGuideFractions(video) {
+  const { sx, sy, sw, sh } = getCoverSourceRect(
+    video,
+    $("#scan-card-guide").getBoundingClientRect(),
+    video.getBoundingClientRect()
+  );
+  return { fx: sx / video.videoWidth, fy: sy / video.videoHeight, fw: sw / video.videoWidth, fh: sh / video.videoHeight };
+}
+
+const MAX_CARD_HEIGHT = 1800; // größere Fotos werden verkleinert (Speicher/Tempo)
+
+function cropToCanvas(source, srcW, srcH, f) {
+  const sx = f.fx * srcW;
+  const sy = f.fy * srcH;
+  const sw = f.fw * srcW;
+  const sh = f.fh * srcH;
+  const scale = Math.min(1, MAX_CARD_HEIGHT / sh);
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(sw * scale));
+  canvas.height = Math.max(1, Math.round(sh * scale));
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(source, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+// Standbild aus dem laufenden Video (schnell, für Auto-Scan und als Fallback)
 function captureCardCanvas() {
   const video = $("#scan-video");
-  const guide = $("#scan-card-guide");
-  const videoRect = video.getBoundingClientRect();
-  const guideRect = guide.getBoundingClientRect();
-  const { sx, sy, sw, sh } = getCoverSourceRect(video, guideRect, videoRect);
-
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(sw));
-  canvas.height = Math.max(1, Math.round(sh));
-  canvas.getContext("2d").drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
-  return canvas;
+  return cropToCanvas(video, video.videoWidth, video.videoHeight, getGuideFractions(video));
 }
 
-function extractCropFraction(cardCanvas, x0, x1, y0, y1) {
-  const x = Math.round(cardCanvas.width * x0);
-  const y = Math.round(cardCanvas.height * y0);
-  const w = Math.round(cardCanvas.width * (x1 - x0));
-  const h = Math.round(cardCanvas.height * (y1 - y0));
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, w);
-  canvas.height = Math.max(1, h);
-  canvas.getContext("2d").drawImage(cardCanvas, x, y, w, h, 0, 0, canvas.width, canvas.height);
-  return canvas;
+// Einzelbild: wenn möglich ein echtes Foto in voller Sensorauflösung
+// (Chrome/Android: ImageCapture.takePhoto). Nur verwendbar, wenn das Foto
+// dasselbe Seitenverhältnis wie das Video hat - sonst passt der Rahmen nicht.
+// Liefert null, wenn kein besseres Foto möglich ist.
+async function takeHiResCardPhoto(fractions) {
+  const video = $("#scan-video");
+  const track = scanStream && scanStream.getVideoTracks()[0];
+  if (!track || typeof ImageCapture === "undefined") return null;
+  try {
+    const blob = await Promise.race([
+      new ImageCapture(track).takePhoto(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 4000)),
+    ]);
+    const bitmap = await createImageBitmap(blob);
+    const videoAspect = video.videoWidth / video.videoHeight;
+    const photoAspect = bitmap.width / bitmap.height;
+    const usable = Math.abs(photoAspect - videoAspect) / videoAspect < 0.03 && bitmap.width > video.videoWidth;
+    const canvas = usable ? cropToCanvas(bitmap, bitmap.width, bitmap.height, fractions) : null;
+    bitmap.close();
+    return canvas;
+  } catch (err) {
+    return null;
+  }
 }
 
-// Vergrößert den Ausschnitt, wandelt ihn in Graustufen um und binarisiert ihn
-// (Otsu-Schwellenwert) zu reinem Schwarz/Weiß. Erkennt automatisch, ob der
-// Kartenname hell-auf-dunkel (die meisten Kartentypen) oder dunkel-auf-hell
-// (z.B. Synchro-Karten) gedruckt ist, und normalisiert auf ein einheitliches
-// Format - das verbessert die Texterkennung erheblich gegenüber rohen
-// Kamerabildern mit Farbverläufen.
-function preprocessForOcr(sourceCanvas, targetHeight = 140) {
-  const scale = targetHeight / sourceCanvas.height;
-  const w = Math.max(1, Math.round(sourceCanvas.width * scale));
+// ============================================================
+// TEXTERKENNUNG (Tesseract) AN FESTEN KARTENPOSITIONEN
+// ============================================================
+// Positionen als Anteile der Karte [x0, x1, y0, y1]. Der Namensbereich endet
+// VOR dem Attribut-Symbol (dort steht z.B. "FINSTERNIS", das sonst im Namen
+// landet). "auto" = per locateNameRect gefundene Namenszeile.
+// mode: "raw" (unverändert, Tesseract binarisiert selbst) / "gray" / "adaptive",
+// psm: Tesseract-Seitenmodus (13 = eine Rohzeile, 7 = eine Zeile, 6 = Block).
+// Reihenfolge und Varianten per Vergleichstest gewählt (test-scans/_referenz):
+// automatisch gefundene Zeile ~88 % richtig, feste Ausschnitte nur 40-60 %,
+// weil schon 2-3 % Versatz der Karte den Namen abschneiden.
+const NAME_FALLBACK_RECT = [0.05, 0.83, 0.03, 0.12];
+const NAME_STEPS = [
+  { rect: "auto", mode: "raw", psm: "13", label: "Name" },
+  { rect: "auto", mode: "gray", psm: "13", label: "Name (Kontrast)" },
+  { rect: [0.04, 0.85, 0.0, 0.16], mode: "raw", psm: "6", label: "Name (großzügig)" },
+  { rect: [0.04, 0.85, 0.06, 0.135], mode: "raw", psm: "7", label: "Name (tiefer)" },
+  { rect: [0.05, 0.83, 0.02, 0.105], mode: "gray", psm: "13", label: "Name (höher)" },
+];
+// Set-Code (z.B. "LEDE-DE012") steht direkt unter dem Artwork, bei Pendel-
+// und Link-Karten teils weiter unten; der 8-stellige Passcode unten links.
+const CODE_STEPS = [
+  { rect: [0.04, 0.97, 0.705, 0.79], label: "Set-Code" },
+  { rect: [0.02, 0.98, 0.925, 1.0], label: "Passcode" },
+];
+const CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+
+// Ausschnitt -> auf Zielhöhe skaliert, vorverarbeitet (siehe
+// ScanEngine.preprocessPixels) und mit weißem Rand versehen (Tesseract
+// erkennt Text direkt an der Bildkante schlecht).
+function prepareOcrCanvas(cardCanvas, [x0, x1, y0, y1], targetHeight, mode) {
+  const sx = cardCanvas.width * x0;
+  const sy = cardCanvas.height * y0;
+  const sw = cardCanvas.width * (x1 - x0);
+  const sh = cardCanvas.height * (y1 - y0);
+  const w = Math.max(1, Math.round(sw * (targetHeight / sh)));
   const h = targetHeight;
+
+  const work = document.createElement("canvas");
+  work.width = w;
+  work.height = h;
+  const ctx = work.getContext("2d", { willReadFrequently: true });
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(cardCanvas, sx, sy, sw, sh, 0, 0, w, h);
+  const img = ctx.getImageData(0, 0, w, h);
+  if (mode !== "raw") ScanEngine.preprocessPixels(img.data, w, h, mode);
+  ctx.putImageData(img, 0, 0);
+
+  const pad = Math.round(h * 0.15);
   const out = document.createElement("canvas");
-  out.width = w;
-  out.height = h;
-  const ctx = out.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(sourceCanvas, 0, 0, w, h);
-
-  const imgData = ctx.getImageData(0, 0, w, h);
-  const d = imgData.data;
-  const n = w * h;
-  const gray = new Uint8ClampedArray(n);
-  const hist = new Array(256).fill(0);
-  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
-    const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
-    gray[p] = g;
-    hist[g]++;
-  }
-
-  // Otsu-Schwellenwert: findet automatisch den besten Trennwert zwischen Text und Hintergrund
-  let sum = 0;
-  for (let t = 0; t < 256; t++) sum += t * hist[t];
-  let sumB = 0,
-    wB = 0,
-    maxVar = 0,
-    threshold = 127;
-  for (let t = 0; t < 256; t++) {
-    wB += hist[t];
-    if (wB === 0) continue;
-    const wF = n - wB;
-    if (wF === 0) break;
-    sumB += t * hist[t];
-    const mB = sumB / wB;
-    const mF = (sum - sumB) / wF;
-    const varBetween = wB * wF * (mB - mF) * (mB - mF);
-    if (varBetween > maxVar) {
-      maxVar = varBetween;
-      threshold = t;
-    }
-  }
-
-  let darkCount = 0;
-  for (let p = 0; p < n; p++) if (gray[p] < threshold) darkCount++;
-  const invert = darkCount > n / 2; // Mehrheit dunkel -> invertieren, damit Ergebnis dunkler Text auf hellem Grund ist
-
-  for (let i = 0, p = 0; i < d.length; i += 4, p++) {
-    let v = gray[p] < threshold ? 0 : 255;
-    if (invert) v = 255 - v;
-    d[i] = d[i + 1] = d[i + 2] = v;
-  }
-  ctx.putImageData(imgData, 0, 0);
+  out.width = w + 2 * pad;
+  out.height = h + 2 * pad;
+  const octx = out.getContext("2d");
+  octx.fillStyle = "#fff";
+  octx.fillRect(0, 0, out.width, out.height);
+  octx.drawImage(work, pad, pad);
   return out;
 }
 
-async function recognizeText(canvas, psm) {
-  const worker = await getOcrWorker();
-  await worker.setParameters({ tessedit_pageseg_mode: psm });
-  const {
-    data: { text },
-  } = await worker.recognize(canvas);
-  return text || "";
-}
+// Sucht die Namenszeile im oberen Kartenbereich, damit der Ausschnitt auch
+// bei ungenau ausgerichteter Karte auf dem Namen sitzt. Gesucht wird nur in
+// der linken Hälfte (Namen stehen links, Level-Sterne/Attribut rechts).
+// Liefert [x0, x1, y0, y1] wie NAME_STEPS oder null.
+const NAME_SEARCH_REGION = [0.06, 0.6, 0.0, 0.2];
 
-async function recognizeWithConfidence(canvas, psm) {
-  const worker = await getOcrWorker();
-  await worker.setParameters({ tessedit_pageseg_mode: psm });
-  const { data } = await worker.recognize(canvas);
-  return { text: data.text || "", confidence: data.confidence || 0 };
-}
-
-// ============================================================
-// MEHRERE AUSSCHNITT-VARIANTEN GLEICHZEITIG VERSUCHEN
-// ============================================================
-// Statt sich auf EINE exakt kalibrierte Position zu verlassen (die bei
-// leicht abweichender Kartenausrichtung ins Leere läuft), probiert die App
-// mehrere Ausschnitte durch - von eng bis großzügig - und nimmt das
-// Ergebnis, bei dem Tesseract selbst am sichersten ist (Confidence-Wert).
-// Das macht die Erkennung deutlich toleranter gegenüber ungenauer
-// Kartenposition, kostet aber etwas mehr Zeit pro Scan.
-async function bestGuessFromCard(cardCanvas, onProgress) {
-  const attempts = [
-    { rect: [0.04, 0.92, 0.035, 0.095], psm: "7", h: 160, label: "eng" },
-    { rect: [0.02, 0.98, 0.0, 0.14], psm: "6", h: 200, label: "großzügig" },
-    { rect: [0.0, 1.0, 0.0, 1.0], psm: "6", h: 260, label: "ganze Karte" },
-  ];
-
-  let best = null;
-  for (const a of attempts) {
-    if (onProgress) onProgress(a.label);
-    try {
-      const crop = extractCropFraction(cardCanvas, ...a.rect);
-      const processed = preprocessForOcr(crop, a.h);
-      const { text, confidence } = await recognizeWithConfidence(processed, a.psm);
-      const guess = extractLikelyCardName(text);
-      if (guess && (!best || confidence > best.confidence)) {
-        best = { guess, confidence, canvas: processed, label: a.label };
-      }
-    } catch (err) {
-      // einzelner Versuch fehlgeschlagen - einfach mit dem nächsten weitermachen
-    }
-  }
-  return best;
-}
-
-async function captureAndRecognize() {
-  const cardCanvas = captureCardCanvas();
-  $("#scan-captured-img").src = cardCanvas.toDataURL("image/jpeg", 0.9);
-  $("#scan-captured-img").classList.remove("hidden");
-  $("#scan-video").classList.add("hidden");
-  $("#scan-card-guide").classList.add("hidden");
-  stopScanCamera();
-
-  $("#scan-capture-btn").classList.add("hidden");
-  $("#scan-retry-btn").classList.remove("hidden");
-  $("#scan-status").textContent = "Erkenne Text … (beim ersten Mal dauert das Laden der Erkennung etwas länger)";
-
-  try {
-    const result = await bestGuessFromCard(cardCanvas, (label) => {
-      $("#scan-status").textContent = `Erkenne Text … (Versuch: ${label})`;
-    });
-
-    if (result) {
-      // Diagnose-Vorschau: zeigt exakt das Bild, das zum besten Ergebnis geführt hat
-      $("#scan-debug-img").src = result.canvas.toDataURL("image/png");
-      $("#scan-debug").classList.remove("hidden");
-    }
-
-    const guess = result ? result.guess : "";
-
-    $("#scan-name-row").classList.remove("hidden");
-    $("#scan-name-input").value = guess;
-
-    if (guess) {
-      $("#scan-status").textContent = "Text erkannt – bitte prüfen und die richtige Karte auswählen:";
-      fuzzySearchAndRender(guess, "#scan-results", "#scan-search-status");
-    } else {
-      $("#scan-status").textContent = "Kein eindeutiger Text erkannt. Bitte Namen manuell eingeben.";
-    }
-  } catch (err) {
-    $("#scan-status").textContent = "Fehler bei der Texterkennung: " + err.message;
-    $("#scan-name-row").classList.remove("hidden");
-  }
+function locateNameRect(cardCanvas) {
+  const [x0, x1, y0, y1] = NAME_SEARCH_REGION;
+  const sw = cardCanvas.width * (x1 - x0);
+  const sh = cardCanvas.height * (y1 - y0);
+  const w = 300;
+  const h = Math.max(20, Math.round((w * sh) / sw));
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(cardCanvas, cardCanvas.width * x0, cardCanvas.height * y0, sw, sh, 0, 0, w, h);
+  // Suchbereich: Kartenhöhe ~2-12 % (Name), darunter folgen die Level-Sterne
+  const band = ScanEngine.locateTextBand(ctx.getImageData(0, 0, w, h).data, w, h, 0.1, 0.6);
+  if (!band) return null;
+  const top = y0 + band[0] * (y1 - y0);
+  const bottom = y0 + band[1] * (y1 - y0);
+  return [0.04, 0.84, Math.max(0, top - 0.012), Math.min(0.25, bottom + 0.012)];
 }
 
 async function getOcrWorker() {
@@ -1839,19 +1853,140 @@ async function getOcrWorker() {
   return ocrWorker;
 }
 
-// Der Kartenname ist innerhalb des oberen Kartenbereichs fast immer die
-// längste zusammenhängende Textzeile (länger als z.B. "[Zauberkarte]" oder
-// Fragmente vom Rand). Wir wählen daher unter den ersten Zeilen die längste
-// aus, statt stur die erste zu nehmen - toleranter gegenüber Rand-Rauschen.
-function extractLikelyCardName(rawText) {
-  const lines = (rawText || "")
-    .split("\n")
-    .map((l) => l.replace(/[^\p{L}\p{N}\s\-,'"!.]/gu, "").trim())
-    .filter((l) => l.length >= 4);
-  if (lines.length === 0) return "";
-  const candidates = lines.slice(0, 4); // nur die obersten paar Zeilen betrachten
-  candidates.sort((a, b) => b.length - a.length);
-  return candidates[0];
+async function ocrText(canvas, { psm, whitelist = "" }) {
+  const worker = await getOcrWorker();
+  await worker.setParameters({ tessedit_pageseg_mode: psm, tessedit_char_whitelist: whitelist });
+  const { data } = await worker.recognize(canvas);
+  return data.text || "";
+}
+
+// Erkennt eine Karte aus dem Kartenbild. Reihenfolge: Name, Set-Code,
+// Passcode, dann weitere Namensvarianten - bricht ab, sobald das Ergebnis
+// sicher ist. Jeder Schritt wird gegen die Kartendatenbank geprüft
+// (ScanEngine.rankCandidates), nicht gegen Tesseracts eigene Sicherheit.
+async function recognizeCard(cardCanvas, onProgress) {
+  const steps = [
+    { kind: "name", ...NAME_STEPS[0] },
+    { kind: "name", ...NAME_STEPS[1] },
+    { kind: "code", ...CODE_STEPS[0] },
+    { kind: "code", ...CODE_STEPS[1] },
+    ...NAME_STEPS.slice(2).map((s) => ({ kind: "name", ...s })),
+  ];
+  const autoRect = locateNameRect(cardCanvas) || NAME_FALLBACK_RECT;
+  const nameTexts = [];
+  const nameCanvases = [];
+  const codeTexts = [];
+  let ranking = { candidates: [], confidence: "none" };
+
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    if (onProgress) onProgress(s.label);
+    try {
+      if (s.kind === "name") {
+        const rect = s.rect === "auto" ? autoRect : s.rect;
+        const canvas = prepareOcrCanvas(cardCanvas, rect, s.psm === "6" ? 200 : 96, s.mode);
+        nameTexts.push(await ocrText(canvas, { psm: s.psm }));
+        nameCanvases.push(canvas);
+      } else {
+        const canvas = prepareOcrCanvas(cardCanvas, s.rect, 160, "gray");
+        codeTexts.push(await ocrText(canvas, { psm: "11", whitelist: CODE_CHARS }));
+      }
+    } catch (err) {
+      continue; // einzelner Schritt fehlgeschlagen - mit dem nächsten weitermachen
+    }
+    await ensureCardDbLoaded();
+    ranking = ScanEngine.rankCandidates(cardIndex, { nameTexts, codeTexts });
+    const top = ranking.candidates[0];
+    // Früh aufhören, sobald das Ergebnis eindeutig ist (spart beim Auto-Scan viel
+    // Zeit); bei nur knapp sicherem Namen erst noch die Codes gegenprüfen.
+    if (ranking.confidence === "sure" && (i >= 3 || top.score >= 0.95)) break;
+  }
+
+  // Für Anzeige/Diagnose: der Namensausschnitt, der am besten zur Top-Karte passt
+  const top = ranking.candidates[0] || null;
+  let bestIdx = 0;
+  let bestScore = -1;
+  nameTexts.forEach((t, k) => {
+    const score = top ? ScanEngine.nameScoreFor(cardIndex, top.id, t) : t.trim().length;
+    if (score > bestScore) {
+      bestScore = score;
+      bestIdx = k;
+    }
+  });
+
+  return {
+    cards: ranking.candidates.slice(0, 6).map((c) => buildMergedCardById(c.id)).filter(Boolean),
+    top,
+    confidence: ranking.confidence,
+    rawName: (nameTexts[bestIdx] || "").replace(/\s+/g, " ").trim(),
+    debugCanvas: nameCanvases[bestIdx] || null,
+    ocr: { nameTexts, codeTexts }, // Rohtexte für Diagnose
+  };
+}
+
+// ============================================================
+// EINZELBILD-MODUS
+// ============================================================
+async function captureAndRecognize() {
+  const video = $("#scan-video");
+  $("#scan-capture-btn").disabled = true;
+  $("#scan-status").textContent = "Foto wird aufgenommen …";
+
+  const fractions = getGuideFractions(video);
+  const frameCanvas = cropToCanvas(video, video.videoWidth, video.videoHeight, fractions);
+  const photoCanvas = await takeHiResCardPhoto(fractions);
+  const cardCanvas = photoCanvas || frameCanvas;
+
+  $("#scan-captured-img").src = cardCanvas.toDataURL("image/jpeg", 0.9);
+  $("#scan-captured-img").classList.remove("hidden");
+  $("#scan-video").classList.add("hidden");
+  $("#scan-card-guide").classList.add("hidden");
+  stopScanCamera();
+
+  $("#scan-capture-btn").classList.add("hidden");
+  $("#scan-capture-btn").disabled = false;
+  $("#scan-retry-btn").classList.remove("hidden");
+  $("#scan-status").textContent = "Erkenne Karte … (beim ersten Mal dauert das Laden der Erkennung etwas länger)";
+
+  const progress = (label) => {
+    $("#scan-status").textContent = `Erkenne Karte … (${label})`;
+  };
+
+  try {
+    let result = await recognizeCard(cardCanvas, progress);
+    // Falls das hochaufgelöste Foto nicht eindeutig war: Video-Standbild als
+    // Gegenprobe (manche Kameras schneiden Foto und Video unterschiedlich zu).
+    if (photoCanvas && result.confidence !== "sure") {
+      const alt = await recognizeCard(frameCanvas, progress);
+      if ((alt.top ? alt.top.score : 0) > (result.top ? result.top.score : 0)) result = alt;
+    }
+
+    if (result.debugCanvas) {
+      $("#scan-debug-img").src = result.debugCanvas.toDataURL("image/png");
+      $("#scan-debug").classList.remove("hidden");
+    }
+
+    const best = result.confidence !== "none" ? result.cards[0] : null;
+    $("#scan-name-row").classList.remove("hidden");
+    $("#scan-name-input").value = best ? best.name_de || best.name_en : result.rawName;
+
+    if (result.confidence === "sure") {
+      $("#scan-status").textContent = `Erkannt: ${best.name_de || best.name_en}`;
+      $("#scan-search-status").textContent = "Sicher erkannt – falls doch falsch, unten die richtige Karte wählen:";
+    } else if (result.confidence === "unsure") {
+      $("#scan-status").textContent = "Nicht ganz sicher – bitte die richtige Karte auswählen.";
+      $("#scan-search-status").textContent = `${result.cards.length} mögliche Treffer (wahrscheinlichster zuerst):`;
+    } else {
+      $("#scan-status").textContent = "Keine passende Karte gefunden. Namen korrigieren und „Suchen“ drücken.";
+      $("#scan-search-status").textContent = result.cards.length ? "Vielleicht eine davon?" : "";
+    }
+    renderSearchResults(result.cards, "#scan-results");
+    if (best) $("#scan-results").firstElementChild.classList.add("result-card-best");
+    if (result.confidence === "sure") openAddModal(best);
+  } catch (err) {
+    $("#scan-status").textContent = "Fehler bei der Erkennung: " + err.message;
+    $("#scan-name-row").classList.remove("hidden");
+  }
 }
 
 function resetScan() {
@@ -1862,6 +1997,7 @@ function resetScan() {
   $("#scan-placeholder").classList.remove("hidden");
   $("#scan-start-btn").classList.remove("hidden");
   $("#scan-capture-btn").classList.add("hidden");
+  $("#scan-capture-btn").disabled = false;
   $("#scan-retry-btn").classList.add("hidden");
   $("#scan-name-row").classList.add("hidden");
   $("#scan-debug").classList.add("hidden");
@@ -1879,7 +2015,7 @@ function resetScan() {
 // ============================================================
 // AUTO-SCAN (Serienerfassung per Bewegungserkennung)
 // ============================================================
-let autoScanQueue = []; // {id, thumb, guess, matched, quantity, status}
+let autoScanQueue = []; // {id, thumb, guess, matched, alternatives, confidence, quantity, status}
 let motionInterval = null;
 let motionSmallCanvas = document.createElement("canvas");
 motionSmallCanvas.width = 48;
@@ -1993,6 +2129,8 @@ function captureForAutoScan() {
     thumb,
     guess: "",
     matched: null,
+    alternatives: [],
+    confidence: "none",
     quantity: 1,
     status: "ocr",
   };
@@ -2004,125 +2142,61 @@ function captureForAutoScan() {
 
 async function processAutoScanItem(item, cardCanvas) {
   try {
-    const result = await bestGuessFromCard(cardCanvas);
-    item.guess = result ? result.guess : "";
+    const result = await recognizeCard(cardCanvas);
+    item.guess = result.rawName;
+    item.alternatives = result.cards;
+    item.confidence = result.confidence;
+    const match = result.confidence !== "none" ? result.cards[0] : null;
 
-    item.status = "searching";
-    renderScanQueue();
-
-    if (item.guess) {
-      const match = await fuzzyTopMatch(item.guess);
-      if (match) {
-        // Wurde dieselbe Karte gerade schon gescannt? Dann Anzahl statt neuer Zeile erhöhen.
-        const existing = autoScanQueue.find((q) => q.id !== item.id && q.matched && q.matched.id === match.id);
-        if (existing) {
-          existing.quantity++;
-          autoScanQueue = autoScanQueue.filter((q) => q.id !== item.id);
-          renderScanQueue();
-          return;
-        }
-        item.matched = match;
-        item.status = "matched";
-      } else {
-        item.status = "nomatch";
+    if (match && result.confidence === "sure") {
+      // Dieselbe Karte in diesem Lauf schon sicher erkannt? Dann nur Anzahl erhöhen.
+      const existing = autoScanQueue.find(
+        (q) => q.id !== item.id && q.confidence === "sure" && q.matched && q.matched.id === match.id
+      );
+      if (existing) {
+        existing.quantity++;
+        autoScanQueue = autoScanQueue.filter((q) => q.id !== item.id);
+        refreshScanViews();
+        return;
       }
-    } else {
-      item.status = "nomatch";
     }
+    item.matched = match;
+    item.status = !match ? "nomatch" : result.confidence === "sure" ? "matched" : "unsure";
   } catch (err) {
     item.status = "error";
   }
+  refreshScanViews();
+}
+
+// Warteschlange und - falls schon geöffnet - die Übersicht aktualisieren
+// (Erkennung kann noch laufen, wenn der Scan-Lauf bereits beendet wurde).
+function refreshScanViews() {
   renderScanQueue();
-}
-
-// Liefert den wahrscheinlichsten Treffer für einen (evtl. unscharfen) OCR-Namen.
-// (Wird als Fallback genutzt, falls die lokale Kartendatenbank noch nicht geladen ist.)
-async function searchTopCandidate(query) {
-  const [deResults, enResults] = await Promise.all([fetchYgo(query, "de"), fetchYgo(query, "en")]);
-  const all = [...deResults, ...enResults];
-  if (all.length === 0) return null;
-
-  const qLower = query.trim().toLowerCase();
-  const exact = all.find((c) => c.name.toLowerCase() === qLower);
-  const best = exact || all[0];
-
-  const enMatch = enResults.find((c) => c.id === best.id) || (best.id ? enResults[0] : null);
-  const deMatch = deResults.find((c) => c.id === best.id);
-  const canonical = enMatch || best;
-
-  return {
-    id: canonical.id,
-    name_en: enMatch ? enMatch.name : canonical.name,
-    name_de: deMatch ? deMatch.name : null,
-    type: canonical.type,
-    race: canonical.race,
-    attribute: canonical.attribute,
-    atk: canonical.atk,
-    def: canonical.def,
-    level: canonical.level ?? canonical.linkval,
-    archetype: canonical.archetype || null,
-    scale: canonical.scale ?? null,
-    desc_de: deMatch ? deMatch.desc : null,
-    desc_en: enMatch ? enMatch.desc : canonical.desc,
-    image: canonical.card_images && canonical.card_images[0] ? canonical.card_images[0].image_url : "",
-  };
+  if (!$("#scan-review").classList.contains("hidden")) renderScanReview();
 }
 
 // ============================================================
-// UNSCHARFER (TIPPFEHLER-TOLERANTER) ABGLEICH GEGEN DIE GESAMTE
-// KARTENDATENBANK - deutlich robuster für OCR-Ergebnisse als eine exakte
-// API-Suche, weil erkannter Text fast nie 100% korrekt ist.
+// KARTENDATENBANK FÜR DIE ERKENNUNG
 // ============================================================
-let cardDbEn = null;
-let cardDbDe = null;
 let cardDbEnById = null;
 let cardDbDeById = null;
+let cardIndex = null; // ScanEngine-Index (Namen, Set-Codes, Passcodes)
 let cardDbLoadPromise = null;
 
 function ensureCardDbLoaded() {
-  if (cardDbEn && cardDbDe) return Promise.resolve();
+  if (cardIndex) return Promise.resolve();
   if (cardDbLoadPromise) return cardDbLoadPromise;
 
   cardDbLoadPromise = (async () => {
     const [en, de] = await Promise.all([fetchFullYgoDatabase("en"), fetchFullYgoDatabase("de")]);
-    cardDbEn = en;
-    cardDbDe = de;
     cardDbEnById = new Map(en.map((c) => [c.id, c]));
     cardDbDeById = new Map(de.map((c) => [c.id, c]));
-  })();
+    cardIndex = ScanEngine.buildIndex(en, de);
+  })().catch((err) => {
+    cardDbLoadPromise = null; // beim nächsten Versuch erneut laden
+    throw err;
+  });
   return cardDbLoadPromise;
-}
-
-// Klassische Levenshtein-Distanz (Anzahl Einfüge-/Lösch-/Ersetz-Operationen).
-function levenshtein(a, b) {
-  const al = a.length,
-    bl = b.length;
-  if (al === 0) return bl;
-  if (bl === 0) return al;
-  const dp = new Array(bl + 1);
-  for (let j = 0; j <= bl; j++) dp[j] = j;
-  for (let i = 1; i <= al; i++) {
-    let prev = dp[0];
-    dp[0] = i;
-    for (let j = 1; j <= bl; j++) {
-      const tmp = dp[j];
-      dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
-      prev = tmp;
-    }
-  }
-  return dp[bl];
-}
-
-// Ähnlichkeit 0..1 (1 = identisch). Teilstring-Treffer bekommen einen Bonus,
-// damit auch nur teilweise erkannter Text (abgeschnittene Zeile o.ä.) gut abschneidet.
-function nameSimilarity(query, name) {
-  const q = query.toLowerCase().trim();
-  const n = name.toLowerCase().trim();
-  if (!q || !n) return 0;
-  const dist = levenshtein(q, n);
-  let score = 1 - dist / Math.max(q.length, n.length, 1);
-  if (n.includes(q) || q.includes(n)) score = Math.max(score, 0.72);
-  return score;
 }
 
 function buildMergedCardById(id) {
@@ -2148,38 +2222,17 @@ function buildMergedCardById(id) {
   };
 }
 
-// Findet die besten Kandidaten-IDs für einen (evtl. fehlerhaften) Namen,
-// sortiert nach Ähnlichkeit, über Deutsch UND Englisch hinweg.
-function fuzzyFindCandidateIds(query, limit = 5) {
-  const q = (query || "").trim();
-  if (!q || !cardDbEn || !cardDbDe) return [];
-
-  const bestById = new Map();
-  const consider = (card) => {
-    const score = nameSimilarity(q, card.name);
-    const existing = bestById.get(card.id);
-    if (!existing || score > existing) bestById.set(card.id, score);
-  };
-  cardDbEn.forEach(consider);
-  cardDbDe.forEach(consider);
-
-  return Array.from(bestById.entries())
-    .filter(([, score]) => score > 0.3)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, limit)
-    .map(([id]) => id);
+// Tippfehlertolerante Suche nach Namen (für manuell korrigierten Text).
+async function fuzzyCandidates(query, limit = 6) {
+  await ensureCardDbLoaded();
+  const { candidates, confidence } = ScanEngine.rankCandidates(cardIndex, { nameTexts: [query] });
+  return { cards: candidates.slice(0, limit).map((c) => buildMergedCardById(c.id)).filter(Boolean), confidence };
 }
 
-// Unscharfe Suche + Anzeige als Ergebnis-Kacheln (nutzt im Hintergrund die
-// lokale Datenbank; lädt sie bei Bedarf einmalig nach).
 async function fuzzySearchAndRender(query, resultsSel, statusSel) {
   $(statusSel).textContent = "Suche ähnliche Karten …";
   $(resultsSel).innerHTML = "";
-
-  await ensureCardDbLoaded();
-  const ids = fuzzyFindCandidateIds(query, 6);
-  const cards = ids.map(buildMergedCardById).filter(Boolean);
-
+  const { cards } = await fuzzyCandidates(query, 6);
   if (cards.length === 0) {
     $(statusSel).textContent = "Keine ähnlichen Karten gefunden. Bitte Namen manuell korrigieren.";
     return;
@@ -2188,11 +2241,8 @@ async function fuzzySearchAndRender(query, resultsSel, statusSel) {
   renderSearchResults(cards, resultsSel);
 }
 
-// Bester unscharfer Treffer für den Auto-Scan (ohne Nutzerinteraktion mitten im Lauf).
-async function fuzzyTopMatch(query) {
-  await ensureCardDbLoaded();
-  const ids = fuzzyFindCandidateIds(query, 1);
-  return ids.length > 0 ? buildMergedCardById(ids[0]) : null;
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
 function renderScanQueue() {
@@ -2204,7 +2254,8 @@ function renderScanQueue() {
     el.className = "scan-queue-item";
     const img = item.matched ? item.matched.image : item.thumb;
     let statusHtml = "";
-    if (item.status === "ocr" || item.status === "searching") statusHtml = `<div class="status-badge">⏳</div>`;
+    if (item.status === "ocr") statusHtml = `<div class="status-badge">⏳</div>`;
+    else if (item.status === "unsure") statusHtml = `<div class="status-badge status-unsure">?</div>`;
     else if (item.status === "nomatch") statusHtml = `<div class="status-badge">❓</div>`;
     else if (item.status === "error") statusHtml = `<div class="status-badge">⚠️</div>`;
     el.innerHTML = `
@@ -2237,20 +2288,36 @@ function renderScanReview() {
 
   autoScanQueue.forEach((item) => {
     const row = document.createElement("div");
-    row.className = "scan-review-row";
-    const img = item.matched ? item.matched.image : item.thumb;
+    row.className = "scan-review-row" + (item.status === "unsure" || item.status === "nomatch" ? " needs-check" : "");
     const nameVal = item.matched ? item.matched.name_de || item.matched.name_en : item.guess;
-    const metaText = item.matched
-      ? [item.matched.card_type, item.matched.attribute].filter(Boolean).join(" · ")
-      : item.status === "nomatch"
-      ? "Keine automatische Zuordnung gefunden – Name prüfen und erneut suchen"
-      : "Wird erkannt …";
+    let metaText;
+    if (item.status === "ocr") metaText = "Wird erkannt …";
+    else if (item.matched) {
+      metaText = [item.matched.type, item.matched.attribute].filter(Boolean).join(" · ");
+      if (item.status === "unsure") metaText = "⚠ Nicht sicher – bitte prüfen · " + metaText;
+    } else metaText = "Keine automatische Zuordnung – Name prüfen und erneut suchen";
+
+    const alts = item.alternatives || [];
+    const altSelect =
+      alts.length > 1
+        ? `<select class="review-alt" title="Andere Treffer">
+            ${alts
+              .map(
+                (c) =>
+                  `<option value="${c.id}" ${item.matched && item.matched.id === c.id ? "selected" : ""}>${escapeHtml(c.name_de || c.name_en)}</option>`
+              )
+              .join("")}
+            ${item.matched ? "" : `<option value="" selected>– andere Treffer –</option>`}
+          </select>`
+        : "";
 
     row.innerHTML = `
-      <img src="${img}" alt="" />
+      <img src="${item.matched ? item.matched.image : item.thumb}" alt="" />
+      ${item.matched ? `<img class="review-photo" src="${item.thumb}" alt="Foto" title="Dein Foto" />` : ""}
       <div class="review-main">
-        <input type="text" class="review-name-input" value="${nameVal || ""}" placeholder="Kartenname …" />
-        <span class="review-meta">${metaText}</span>
+        <input type="text" class="review-name-input" value="${escapeHtml(nameVal)}" placeholder="Kartenname …" />
+        ${altSelect}
+        <span class="review-meta">${escapeHtml(metaText)}</span>
       </div>
       <input type="number" class="review-qty" min="1" max="99" value="${item.quantity}" />
       <button class="icon-btn" data-action="research" title="Erneut suchen">🔍</button>
@@ -2260,6 +2327,16 @@ function renderScanReview() {
     row.querySelector(".review-qty").addEventListener("change", (e) => {
       item.quantity = parseInt(e.target.value, 10) || 1;
     });
+    const select = row.querySelector(".review-alt");
+    if (select) {
+      select.addEventListener("change", () => {
+        const chosen = alts.find((c) => String(c.id) === select.value);
+        if (!chosen) return;
+        item.matched = chosen;
+        item.status = "matched"; // vom Nutzer bestätigt
+        renderScanReview();
+      });
+    }
     row.querySelector('[data-action="remove"]').addEventListener("click", () => {
       autoScanQueue = autoScanQueue.filter((q) => q.id !== item.id);
       renderScanReview();
@@ -2268,14 +2345,10 @@ function renderScanReview() {
       const newName = row.querySelector(".review-name-input").value.trim();
       if (!newName) return;
       row.querySelector(".review-meta").textContent = "Suche …";
-      const match = await fuzzyTopMatch(newName);
-      if (match) {
-        item.matched = match;
-        item.status = "matched";
-      } else {
-        item.matched = null;
-        item.status = "nomatch";
-      }
+      const { cards, confidence } = await fuzzyCandidates(newName, 6);
+      item.alternatives = cards;
+      item.matched = cards[0] || null;
+      item.status = !item.matched ? "nomatch" : confidence === "sure" ? "matched" : "unsure";
       renderScanReview();
     });
 
@@ -2290,42 +2363,104 @@ async function saveAutoScanQueue() {
     showToast("Keine zugeordneten Karten zum Speichern.");
     return;
   }
+  const unchecked = autoScanQueue.filter((item) => item.status === "unsure").length;
+  if (unchecked > 0 && !confirm(`${unchecked} Karte(n) sind als „nicht sicher“ markiert. Trotzdem so speichern?`)) return;
 
-  $("#scan-review-save-btn").disabled = true;
-  $("#scan-review-save-btn").textContent = "Speichere …";
+  const btn = $("#scan-review-save-btn");
+  btn.disabled = true;
+  btn.textContent = "Speichere …";
 
-  const rows = validItems.map((item) => ({
-    owner_id: currentSession.user.id,
-    ygo_id: item.matched.id,
-    name_de: item.matched.name_de,
-    name_en: item.matched.name_en,
-    card_type: item.matched.type,
-    attribute: item.matched.attribute,
-    race: item.matched.race,
-    atk: item.matched.atk,
-    def: item.matched.def,
-    level: item.matched.level,
-    image_url: item.matched.image,
-    quantity: item.quantity,
-    effect_text_de: item.matched.desc_de || null,
-    effect_text_en: item.matched.desc_en || null,
-    archetype: item.matched.archetype || null,
-    scale: item.matched.scale ?? null,
-  }));
+  // Gleiche Karte mehrfach im Lauf -> zusammenfassen
+  const byId = new Map();
+  for (const item of validItems) {
+    const entry = byId.get(item.matched.id);
+    if (entry) entry.quantity += item.quantity;
+    else byId.set(item.matched.id, { card: item.matched, quantity: item.quantity });
+  }
 
-  const { error } = await supabaseClient.from("cards").insert(rows);
+  // Dubletten-Schutz wie beim manuellen Speichern: erst per ygo_id, dann per
+  // Name bei Karten ohne ygo_id (z.B. aus dem CSV-Import ohne Treffer).
+  await refreshMyCardIndex();
+  const { data: noIdRows } = await fetchAllRows(() =>
+    supabaseClient
+      .from("cards")
+      .select("id, quantity, name_de, name_en")
+      .eq("owner_id", currentSession.user.id)
+      .is("ygo_id", null)
+      .order("created_at")
+      .order("id")
+  );
+  const findByName = (card) => {
+    const de = (card.name_de || "").toLowerCase();
+    const en = (card.name_en || "").toLowerCase();
+    return (noIdRows || []).find(
+      (r) => (de && r.name_de && r.name_de.toLowerCase() === de) || (r.name_en && r.name_en.toLowerCase() === en)
+    );
+  };
 
-  $("#scan-review-save-btn").disabled = false;
-  $("#scan-review-save-btn").textContent = "Alle bestätigen & speichern";
+  const toInsert = [];
+  const savedIds = new Set(); // bei Teilfehlern nicht erneut speichern
+  let updatedCount = 0;
+  let firstError = null;
+  for (const { card, quantity } of byId.values()) {
+    const existing = myCardIndexByYgoId.get(card.id) || findByName(card);
+    if (existing) {
+      const newQty = existing.quantity + quantity;
+      const { error } = await supabaseClient
+        .from("cards")
+        .update({ quantity: newQty, ygo_id: card.id })
+        .eq("id", existing.id);
+      if (error) {
+        firstError = firstError || error;
+        continue;
+      }
+      updatedCount++;
+      savedIds.add(card.id);
+      logHistory("update", card.name_de || card.name_en, { cardId: existing.id, qtyBefore: existing.quantity, qtyAfter: newQty });
+    } else {
+      toInsert.push({
+        owner_id: currentSession.user.id,
+        ygo_id: card.id,
+        name_de: card.name_de,
+        name_en: card.name_en,
+        card_type: card.type,
+        attribute: card.attribute,
+        race: card.race,
+        atk: card.atk,
+        def: card.def,
+        level: card.level,
+        image_url: card.image,
+        quantity,
+        effect_text_de: card.desc_de || null,
+        effect_text_en: card.desc_en || null,
+        archetype: card.archetype || null,
+        scale: card.scale ?? null,
+      });
+    }
+  }
+  if (toInsert.length) {
+    const { error } = await supabaseClient.from("cards").insert(toInsert);
+    if (error) firstError = firstError || error;
+    else {
+      toInsert.forEach((r) => savedIds.add(r.ygo_id));
+      logHistory("import", `Auto-Scan: ${toInsert.length} Karten hinzugefügt`, {});
+    }
+  }
 
-  if (error) {
-    showToast("Fehler beim Speichern: " + error.message);
+  btn.disabled = false;
+  btn.textContent = "Alle bestätigen & speichern";
+
+  if (firstError) {
+    // Bereits Gespeichertes aus der Liste nehmen, damit ein erneuter Versuch nichts doppelt addiert
+    autoScanQueue = autoScanQueue.filter((q) => !(q.matched && savedIds.has(q.matched.id)));
+    renderScanReview();
+    showToast("Fehler beim Speichern: " + firstError.message);
+    await refreshMyCardIndex();
     return;
   }
 
   const totalQty = validItems.reduce((sum, i) => sum + i.quantity, 0);
-  showToast(`${validItems.length} Karten (${totalQty}× insgesamt) gespeichert`);
-  logHistory("import", `Auto-Scan: ${validItems.length} Karten hinzugefügt`, {});
+  showToast(`${totalQty}× gespeichert (${toInsert.length} neu, ${updatedCount} Anzahl erhöht)`);
 
   autoScanQueue = [];
   $("#scan-review").classList.add("hidden");

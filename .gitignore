@@ -6,3 +6,6 @@ wiederhergestellt/
 
 # Passwort für die verschlüsselten Backups (auch als GitHub-Secret BACKUP_PASSWORD hinterlegt)
 backup-passwort.txt
+
+# Testfotos für die Kartenerkennung (bleiben lokal)
+test-scans/
