@@ -17,7 +17,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=7" />
+<link rel="stylesheet" href="style.css?v=8" />
 </head>
 <body>
 
@@ -149,14 +149,14 @@
       </div>
 
       <p class="scan-intro" id="scan-intro-single">
-        Karte innerhalb des gestrichelten Rahmens ausrichten (guter Lichteinfall, Name gut lesbar),
-        Foto aufnehmen – der Kartenname wird automatisch erkannt und gesucht.
-        Erkennung ist nicht immer perfekt, du kannst den Text vor der Suche korrigieren.
+        Karte ins Bild halten oder legen (guter Lichteinfall, Name gut lesbar), Foto aufnehmen –
+        die Karte wird im Bild automatisch gefunden und erkannt. Am besten vor hellem Hintergrund;
+        der gestrichelte Rahmen dient nur zur Orientierung. Ist die Karte klein im Bild, hilft der Zoom.
       </p>
       <p class="scan-intro hidden" id="scan-intro-auto">
-        Handy fest positionieren (z.B. Kartenschacht/Ständer) und so ausrichten, dass Karten
-        innerhalb des gestrichelten Rahmens landen. Auto-Scan starten, dann Karten nacheinander
-        durchfallen lassen. Sobald eine Karte kurz ruhig liegt, wird sie automatisch erfasst.
+        Handy fest positionieren (z.B. Scan-Halterung) – die Karte muss nicht im Rahmen liegen,
+        sie wird im Bild automatisch gefunden. Auto-Scan starten, dann Karten nacheinander
+        hineinlegen. Sobald eine Karte kurz ruhig liegt, wird sie automatisch erfasst.
       </p>
 
       <div class="scan-camera-wrap" id="scan-camera-wrap">
@@ -166,6 +166,11 @@
         <div class="scan-card-guide hidden" id="scan-card-guide"></div>
         <div class="scan-motion-badge hidden" id="scan-motion-badge">Bereich ruhig – erfasse …</div>
       </div>
+      <label class="scan-zoom hidden" id="scan-zoom-wrap">
+        <span>Zoom</span>
+        <input type="range" id="scan-zoom" min="1" max="2" step="0.1" value="1" />
+        <span id="scan-zoom-val">1.0×</span>
+      </label>
       <canvas id="scan-canvas" class="hidden"></canvas>
 
       <!-- Einzelbild-Modus -->
@@ -412,7 +417,7 @@
 <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="config.js"></script>
-<script src="scan-engine.js?v=1"></script>
-<script src="app.js?v=16"></script>
+<script src="scan-engine.js?v=2"></script>
+<script src="app.js?v=17"></script>
 </body>
 </html>

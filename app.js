@@ -1624,9 +1624,10 @@ async function startScanCamera() {
       video: {
         facingMode: { ideal: "environment" },
         // Ohne Auflösungswunsch liefern viele Handys nur 640x480 - zu wenig
-        // für den Kartennamen und erst recht für Set-Code/Passcode.
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        // für den Kartennamen und erst recht für den Passcode. In einer
+        // Scan-Halterung füllt die Karte nur einen Teil des Bildes.
+        width: { ideal: 2560 },
+        height: { ideal: 1440 },
       },
       audio: false,
     });
@@ -1646,6 +1647,7 @@ async function startScanCamera() {
   } catch (err) {
     // Fokus-Steuerung nicht verfügbar - Kamera läuft trotzdem
   }
+  setupScanZoom(scanStream.getVideoTracks()[0]);
 
   const video = $("#scan-video");
   video.srcObject = scanStream;
@@ -1655,8 +1657,46 @@ async function startScanCamera() {
   $("#scan-start-btn").classList.add("hidden");
   $("#scan-capture-btn").classList.remove("hidden");
   $("#scan-capture-btn").disabled = false;
-  $("#scan-status").textContent = "Karte im Rahmen ausrichten, dann Foto aufnehmen.";
+  $("#scan-status").textContent = "Karte ins Bild legen oder halten (Name gut lesbar), dann Foto aufnehmen.";
   return scanStream;
+}
+
+// Zoom-Regler, falls die Kamera Zoom unterstützt (Chrome/Android). In einer
+// Scan-Halterung macht etwas Zoom die Karte größer und damit Name und
+// Passcode besser lesbar. Die Einstellung wird pro Gerät gemerkt.
+const SCAN_ZOOM_KEY = "kartenarchiv-scan-zoom";
+
+function setupScanZoom(track) {
+  const wrap = $("#scan-zoom-wrap");
+  const input = $("#scan-zoom");
+  wrap.classList.add("hidden");
+  const caps = track && track.getCapabilities ? track.getCapabilities() : {};
+  if (!caps.zoom || caps.zoom.max <= caps.zoom.min) return;
+
+  input.min = caps.zoom.min;
+  input.max = Math.min(caps.zoom.max, 4);
+  input.step = caps.zoom.step || 0.1;
+  let saved = NaN;
+  try {
+    saved = parseFloat(localStorage.getItem(SCAN_ZOOM_KEY));
+  } catch (err) {
+    // kein Speicher verfügbar - Standardzoom
+  }
+  input.value = Number.isFinite(saved) ? saved : caps.zoom.min;
+
+  const apply = () => {
+    const value = parseFloat(input.value);
+    $("#scan-zoom-val").textContent = value.toFixed(1) + "×";
+    track.applyConstraints({ advanced: [{ zoom: value }] }).catch(() => {});
+    try {
+      localStorage.setItem(SCAN_ZOOM_KEY, String(value));
+    } catch (err) {
+      // ignorieren
+    }
+  };
+  input.oninput = apply;
+  apply();
+  wrap.classList.remove("hidden");
 }
 
 function stopScanCamera() {
@@ -1733,16 +1773,39 @@ function cropToCanvas(source, srcW, srcH, f) {
   return canvas;
 }
 
+// Sucht die Karte selbstständig im Bild (source = Video, Foto oder Canvas),
+// damit sie nicht exakt im Rahmen liegen muss - z.B. in einer Scan-Halterung,
+// wo die Karte immer an derselben Stelle, aber nicht mittig liegt.
+// Liefert { x, y, w, h } als Anteile oder null.
+function detectCardBox(source, srcW = source.width, srcH = source.height) {
+  const w = 240;
+  const h = Math.max(1, Math.round((w * srcH) / srcW));
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(source, 0, 0, srcW, srcH, 0, 0, w, h);
+  return ScanEngine.locateCard(ctx.getImageData(0, 0, w, h).data, w, h);
+}
+
+// Karte aus einem Bild ausschneiden: automatisch gefunden, sonst der
+// Ausrichtrahmen (fallbackFractions) - oder null, wenn beides fehlt.
+function cropCard(source, srcW, srcH, fallbackFractions) {
+  const box = detectCardBox(source, srcW, srcH);
+  const f = box ? { fx: box.x, fy: box.y, fw: box.w, fh: box.h } : fallbackFractions;
+  return f ? cropToCanvas(source, srcW, srcH, f) : null;
+}
+
 // Standbild aus dem laufenden Video (schnell, für Auto-Scan und als Fallback)
 function captureCardCanvas() {
   const video = $("#scan-video");
-  return cropToCanvas(video, video.videoWidth, video.videoHeight, getGuideFractions(video));
+  return cropCard(video, video.videoWidth, video.videoHeight, getGuideFractions(video));
 }
 
 // Einzelbild: wenn möglich ein echtes Foto in voller Sensorauflösung
-// (Chrome/Android: ImageCapture.takePhoto). Nur verwendbar, wenn das Foto
-// dasselbe Seitenverhältnis wie das Video hat - sonst passt der Rahmen nicht.
-// Liefert null, wenn kein besseres Foto möglich ist.
+// (Chrome/Android: ImageCapture.takePhoto). Die Karte wird darin selbst
+// gesucht; den Ausrichtrahmen als Ersatz nur, wenn das Foto dasselbe
+// Seitenverhältnis wie das Video hat. Liefert null, wenn kein besseres Foto möglich ist.
 async function takeHiResCardPhoto(fractions) {
   const video = $("#scan-video");
   const track = scanStream && scanStream.getVideoTracks()[0];
@@ -1755,8 +1818,9 @@ async function takeHiResCardPhoto(fractions) {
     const bitmap = await createImageBitmap(blob);
     const videoAspect = video.videoWidth / video.videoHeight;
     const photoAspect = bitmap.width / bitmap.height;
-    const usable = Math.abs(photoAspect - videoAspect) / videoAspect < 0.03 && bitmap.width > video.videoWidth;
-    const canvas = usable ? cropToCanvas(bitmap, bitmap.width, bitmap.height, fractions) : null;
+    const sameView = Math.abs(photoAspect - videoAspect) / videoAspect < 0.03;
+    const canvas =
+      bitmap.width > video.videoWidth ? cropCard(bitmap, bitmap.width, bitmap.height, sameView ? fractions : null) : null;
     bitmap.close();
     return canvas;
   } catch (err) {
@@ -1783,13 +1847,14 @@ const NAME_STEPS = [
   { rect: [0.04, 0.85, 0.06, 0.135], mode: "raw", psm: "7", label: "Name (tiefer)" },
   { rect: [0.05, 0.83, 0.02, 0.105], mode: "gray", psm: "13", label: "Name (höher)" },
 ];
-// Set-Code (z.B. "LEDE-DE012") steht direkt unter dem Artwork, bei Pendel-
-// und Link-Karten teils weiter unten; der 8-stellige Passcode unten links.
-const CODE_STEPS = [
-  { rect: [0.04, 0.97, 0.705, 0.79], label: "Set-Code" },
-  { rect: [0.02, 0.98, 0.925, 1.0], label: "Passcode" },
-];
-const CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+// Der 8-stellige Passcode unten links (= Karten-ID) hilft vor allem, wenn der
+// Name fehlt oder nicht in der Datenbank steht (manche deutsche Namen fehlen
+// bei YGOPRODeck). Die Zeile wird im unteren Kartenbereich gesucht und so
+// skaliert, dass die Schrift ~30 px hoch ist. Den Set-Code (z.B. PHRE-DE049)
+// liest Tesseract auf echten Fotos nicht brauchbar (zu klein, kontrastarm) -
+// daher kein eigener Schritt, ScanEngine wertet ihn aber aus, falls er in
+// einem Text auftaucht. Werte per Fototest gewählt (test-scans/_referenz/codes.js).
+const PASSCODE_STEP = { region: [0.0, 0.5, 0.9, 1.0], searchFrom: 0.1, searchTo: 0.9, textFrac: 0.012, textPx: 30 };
 
 // Ausschnitt -> auf Zielhöhe skaliert, vorverarbeitet (siehe
 // ScanEngine.preprocessPixels) und mit weißem Rand versehen (Tesseract
@@ -1829,8 +1894,10 @@ function prepareOcrCanvas(cardCanvas, [x0, x1, y0, y1], targetHeight, mode) {
 // Liefert [x0, x1, y0, y1] wie NAME_STEPS oder null.
 const NAME_SEARCH_REGION = [0.06, 0.6, 0.0, 0.2];
 
-function locateNameRect(cardCanvas) {
-  const [x0, x1, y0, y1] = NAME_SEARCH_REGION;
+// Sucht in einem Bereich der Karte ([x0, x1, y0, y1]) die stärkste
+// Textzeile; from/to begrenzen die Suche innerhalb des Bereichs.
+// Liefert die Zeile als [top, bottom] in Kartenanteilen oder null.
+function locateTextRow(cardCanvas, [x0, x1, y0, y1], from, to) {
   const sw = cardCanvas.width * (x1 - x0);
   const sh = cardCanvas.height * (y1 - y0);
   const w = 300;
@@ -1840,12 +1907,29 @@ function locateNameRect(cardCanvas) {
   c.height = h;
   const ctx = c.getContext("2d", { willReadFrequently: true });
   ctx.drawImage(cardCanvas, cardCanvas.width * x0, cardCanvas.height * y0, sw, sh, 0, 0, w, h);
-  // Suchbereich: Kartenhöhe ~2-12 % (Name), darunter folgen die Level-Sterne
-  const band = ScanEngine.locateTextBand(ctx.getImageData(0, 0, w, h).data, w, h, 0.1, 0.6);
+  const band = ScanEngine.locateTextBand(ctx.getImageData(0, 0, w, h).data, w, h, from, to);
   if (!band) return null;
-  const top = y0 + band[0] * (y1 - y0);
-  const bottom = y0 + band[1] * (y1 - y0);
-  return [0.04, 0.84, Math.max(0, top - 0.012), Math.min(0.25, bottom + 0.012)];
+  return [y0 + band[0] * (y1 - y0), y0 + band[1] * (y1 - y0)];
+}
+
+function locateNameRect(cardCanvas) {
+  // Suchbereich: Kartenhöhe ~2-12 % (Name), darunter folgen die Level-Sterne
+  const row = locateTextRow(cardCanvas, NAME_SEARCH_REGION, 0.1, 0.6);
+  if (!row) return null;
+  return [0.04, 0.84, Math.max(0, row[0] - 0.012), Math.min(0.25, row[1] + 0.012)];
+}
+
+// Passcode-Zeile ausschneiden und auf lesbare Schriftgröße bringen
+function preparePasscodeCanvas(cardCanvas) {
+  const s = PASSCODE_STEP;
+  const row = locateTextRow(cardCanvas, s.region, s.searchFrom, s.searchTo);
+  let rect = s.region;
+  if (row) {
+    const pad = (row[1] - row[0]) * 0.35;
+    rect = [s.region[0], s.region[1], Math.max(0, row[0] - pad), Math.min(1, row[1] + pad)];
+  }
+  const target = Math.round(((rect[3] - rect[2]) / s.textFrac) * s.textPx);
+  return prepareOcrCanvas(cardCanvas, rect, Math.min(400, target), "gray");
 }
 
 async function getOcrWorker() {
@@ -1860,17 +1944,15 @@ async function ocrText(canvas, { psm, whitelist = "" }) {
   return data.text || "";
 }
 
-// Erkennt eine Karte aus dem Kartenbild. Reihenfolge: Name, Set-Code,
-// Passcode, dann weitere Namensvarianten - bricht ab, sobald das Ergebnis
-// sicher ist. Jeder Schritt wird gegen die Kartendatenbank geprüft
-// (ScanEngine.rankCandidates), nicht gegen Tesseracts eigene Sicherheit.
+// Erkennt eine Karte aus dem Kartenbild. Reihenfolge: Name, Passcode, dann
+// weitere Namensvarianten - bricht ab, sobald das Ergebnis sicher ist. Jeder
+// Schritt wird gegen die Kartendatenbank geprüft (ScanEngine.rankCandidates),
+// nicht gegen Tesseracts eigene Sicherheit.
 async function recognizeCard(cardCanvas, onProgress) {
   const steps = [
     { kind: "name", ...NAME_STEPS[0] },
-    { kind: "name", ...NAME_STEPS[1] },
-    { kind: "code", ...CODE_STEPS[0] },
-    { kind: "code", ...CODE_STEPS[1] },
-    ...NAME_STEPS.slice(2).map((s) => ({ kind: "name", ...s })),
+    { kind: "code", label: "Passcode" },
+    ...NAME_STEPS.slice(1).map((s) => ({ kind: "name", ...s })),
   ];
   const autoRect = locateNameRect(cardCanvas) || NAME_FALLBACK_RECT;
   const nameTexts = [];
@@ -1888,8 +1970,7 @@ async function recognizeCard(cardCanvas, onProgress) {
         nameTexts.push(await ocrText(canvas, { psm: s.psm }));
         nameCanvases.push(canvas);
       } else {
-        const canvas = prepareOcrCanvas(cardCanvas, s.rect, 160, "gray");
-        codeTexts.push(await ocrText(canvas, { psm: "11", whitelist: CODE_CHARS }));
+        codeTexts.push(await ocrText(preparePasscodeCanvas(cardCanvas), { psm: "6" }));
       }
     } catch (err) {
       continue; // einzelner Schritt fehlgeschlagen - mit dem nächsten weitermachen
@@ -1898,8 +1979,8 @@ async function recognizeCard(cardCanvas, onProgress) {
     ranking = ScanEngine.rankCandidates(cardIndex, { nameTexts, codeTexts });
     const top = ranking.candidates[0];
     // Früh aufhören, sobald das Ergebnis eindeutig ist (spart beim Auto-Scan viel
-    // Zeit); bei nur knapp sicherem Namen erst noch die Codes gegenprüfen.
-    if (ranking.confidence === "sure" && (i >= 3 || top.score >= 0.95)) break;
+    // Zeit); bei nur knapp sicherem Namen erst noch den Passcode gegenprüfen.
+    if (ranking.confidence === "sure" && (i >= 1 || top.score >= 0.95)) break;
   }
 
   // Für Anzeige/Diagnose: der Namensausschnitt, der am besten zur Top-Karte passt
@@ -2081,15 +2162,12 @@ function stopAutoScanAndReview() {
 
 function checkMotionTick() {
   const video = $("#scan-video");
-  const guide = $("#scan-card-guide");
   if (!video.videoWidth) return;
 
-  const videoRect = video.getBoundingClientRect();
-  const guideRect = guide.getBoundingClientRect();
-  const { sx, sy, sw, sh } = getCoverSourceRect(video, guideRect, videoRect);
-
+  // Ganzes Kamerabild beobachten: die Karte muss nicht im Rahmen liegen
+  // (Scan-Halterung), sie wird beim Erfassen automatisch gefunden.
   const ctx = motionSmallCanvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, motionSmallCanvas.width, motionSmallCanvas.height);
+  ctx.drawImage(video, 0, 0, motionSmallCanvas.width, motionSmallCanvas.height);
   const frame = ctx.getImageData(0, 0, motionSmallCanvas.width, motionSmallCanvas.height).data;
 
   if (lastSmallFrameData) {

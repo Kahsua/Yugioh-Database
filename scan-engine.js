@@ -154,14 +154,17 @@
     return [...keys];
   }
 
-  // 8-stellige Passcodes (unten links auf der Karte, = Karten-ID).
+  // 8-stellige Passcodes (unten links auf der Karte, = Karten-ID). OCR hängt
+  // oft Ziffern an (z.B. die "1" aus "1. Auflage") - deshalb jedes
+  // 8er-Fenster in Ziffernfolgen von 8-11 Stellen liefern; ob eines davon eine
+  // echte Karte ist, entscheidet der Abgleich mit dem Index.
   function extractPasscodes(text) {
-    const t = (text || "").toUpperCase().replace(/[OQD]/g, "0").replace(/[IL]/g, "1");
-    const out = [];
-    const re = /(^|\D)(\d{8})(?!\d)/g;
-    let m;
-    while ((m = re.exec(t))) out.push(parseInt(m[2], 10));
-    return out;
+    const t = (text || "").toUpperCase().replace(/[OQD]/g, "0").replace(/[IL|]/g, "1").replace(/\s+(?=\d)/g, "");
+    const out = new Set();
+    for (const run of t.match(/\d{8,11}/g) || []) {
+      for (let i = 0; i + 8 <= run.length; i++) out.add(parseInt(run.slice(i, i + 8), 10));
+    }
+    return [...out];
   }
 
   // ---------- Index ----------
@@ -481,7 +484,109 @@
     return [y0 / height, (y1 + 1) / height];
   }
 
+  // Findet die Karte im Kamerabild: die größte zusammenhängende Fläche, die
+  // sich vom hellen, ungesättigten Hintergrund (Scan-Halterung, Tisch)
+  // abhebt - der dunkle Kartenrand umschließt die ganze Karte. Erwartet ein
+  // verkleinertes Bild (~200-300 px breit). Liefert { x, y, w, h } als Anteile
+  // des Bildes oder null, wenn nichts Kartenförmiges gefunden wurde.
+  const CARD_ASPECT = 59 / 86; // Breite / Höhe einer Yu-Gi-Oh-Karte
+
+  function locateCard(data, width, height) {
+    const n = width * height;
+    const mask = new Uint8Array(n);
+    const lum = new Float32Array(n);
+    for (let i = 0, p = 0; p < n; i += 4, p++) {
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+      const sat = max ? (max - min) / max : 0;
+      lum[p] = luma;
+      mask[p] = luma < 140 || sat > 0.3 ? 1 : 0;
+    }
+
+    // Größte zusammenhängende Fläche (4er-Nachbarschaft) per Flutfüllung
+    const label = new Int32Array(n);
+    const stack = new Int32Array(n);
+    let best = null;
+    let current = 0;
+    for (let start = 0; start < n; start++) {
+      if (!mask[start] || label[start]) continue;
+      current++;
+      let sp = 0;
+      stack[sp++] = start;
+      label[start] = current;
+      let count = 0, minX = width, maxX = 0, minY = height, maxY = 0;
+      while (sp) {
+        const p = stack[--sp];
+        count++;
+        const x = p % width;
+        const y = (p - x) / width;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        if (x > 0 && mask[p - 1] && !label[p - 1]) { label[p - 1] = current; stack[sp++] = p - 1; }
+        if (x < width - 1 && mask[p + 1] && !label[p + 1]) { label[p + 1] = current; stack[sp++] = p + 1; }
+        if (y > 0 && mask[p - width] && !label[p - width]) { label[p - width] = current; stack[sp++] = p - width; }
+        if (y < height - 1 && mask[p + width] && !label[p + width]) { label[p + width] = current; stack[sp++] = p + width; }
+      }
+      if (!best || count > best.count) best = { count, label: current };
+    }
+    if (!best) return null;
+
+    // Grenzen über die Belegung je Zeile/Spalte statt über die äußersten
+    // Pixel - dünne Anhängsel (Schatten, Kartenstapel darunter, Hüllenrand)
+    // verschieben den Rand sonst nach außen.
+    const colCount = new Int32Array(width);
+    const rowCount = new Int32Array(height);
+    for (let p = 0; p < n; p++) {
+      if (label[p] !== best.label) continue;
+      colCount[p % width]++;
+      rowCount[(p / width) | 0]++;
+    }
+    const extent = (counts) => {
+      let max = 0;
+      for (const c of counts) if (c > max) max = c;
+      let lo = 0;
+      let hi = counts.length - 1;
+      while (lo < hi && counts[lo] < max * 0.35) lo++;
+      while (hi > lo && counts[hi] < max * 0.35) hi--;
+      return [lo, hi];
+    };
+    [best.minX, best.maxX] = extent(colCount);
+    [best.minY, best.maxY] = extent(rowCount);
+
+    // Breiter als eine Karte? Dann hängen Kanten des Stapels darunter oder der
+    // Hülle mit dran - auf Kartenformat kürzen. Welche Seite: dort, wo nach dem
+    // Kürzen eine kräftige senkrechte Kante liegt (der echte Kartenrand).
+    const cardW = Math.round((best.maxY - best.minY + 1) * CARD_ASPECT);
+    const excess = best.maxX - best.minX + 1 - cardW;
+    if (excess > 2) {
+      const y0 = best.minY + Math.round((best.maxY - best.minY) * 0.15);
+      const y1 = best.maxY - Math.round((best.maxY - best.minY) * 0.15);
+      const edgeNear = (x0) => {
+        let strongest = 0;
+        for (let x = Math.max(1, x0 - 2); x <= Math.min(width - 2, x0 + 2); x++) {
+          let e = 0;
+          for (let y = y0; y <= y1; y++) e += Math.abs(lum[y * width + x + 1] - lum[y * width + x - 1]);
+          strongest = Math.max(strongest, e / (y1 - y0 + 1));
+        }
+        return strongest;
+      };
+      if (edgeNear(best.minX + excess) > edgeNear(best.maxX - excess)) best.minX += excess;
+      else best.maxX -= excess;
+    }
+
+    const w = best.maxX - best.minX + 1;
+    const h = best.maxY - best.minY + 1;
+    const aspect = w / h; // Yu-Gi-Oh-Karte: 59 / 86 = 0.69
+    if (aspect < 0.55 || aspect > 0.85 || w * h < n * 0.04) return null;
+    return { x: best.minX / width, y: best.minY / height, w: w / width, h: h / height };
+  }
+
   const api = {
+    locateCard,
     locateTextBand,
     normalizeName,
     similarity,

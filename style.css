@@ -586,10 +586,13 @@ input:focus, select:focus {
   border-radius: 4px;
 }
 .scan-card-guide::after {
-  content: "Karte hier ausrichten – Name oben";
+  content: "Karte wird automatisch gefunden";
   position: absolute; bottom: -1.6rem; left: 50%; transform: translateX(-50%);
   font-size: 0.68rem; color: var(--gold-soft); white-space: nowrap; font-family: var(--font-mono);
 }
+.scan-zoom { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.7rem; font-size: 0.8rem; color: var(--text-muted); }
+.scan-zoom input[type="range"] { flex: 1; accent-color: var(--gold); }
+#scan-zoom-val { font-family: var(--font-mono); min-width: 3.2em; text-align: right; }
 .scan-motion-badge {
   position: absolute; bottom: 0.7rem; left: 50%; transform: translateX(-50%);
   background: rgba(62, 142, 107, 0.9); color: white; font-size: 0.72rem; font-weight: 700;
