@@ -16,7 +16,7 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
 
 ## Regeln
 1. **Cache-Busting:** Bei JEDER Änderung an `app.js`/`scan-engine.js`/`style.css` die `?v=` in `index.html` hochzählen
-   (aktuell app.js v17, scan-engine.js v2, style.css v8) und bei Shell-Änderungen `CACHE_NAME` in `service-worker.js` erhöhen.
+   (aktuell app.js v18, scan-engine.js v2, style.css v9) und bei Shell-Änderungen `CACHE_NAME` in `service-worker.js` erhöhen.
 2. Supabase-Client heißt `supabaseClient` (nie `supabase` – Namenskonflikt mit dem CDN-Global).
 3. Nie den `service_role`-Key ins Frontend. Sicherheit läuft über RLS.
 4. Listen >1000 Zeilen nur über `fetchAllRows` (`.range()`) mit `.order("created_at").order("id")`.
@@ -33,7 +33,13 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
 ## Kartenscan
 - Karte wird im Kamerabild automatisch gefunden (`detectCardBox` -> `ScanEngine.locateCard`, braucht hellen
   Hintergrund), der Rahmen ist nur Fallback. Alex nutzt eine feste Scan-Halterung (Karte unten mittig,
-  Zoom ~1.3, Zoom-Regler in der App). Auto-Scan beobachtet das ganze Bild auf Bewegung.
+  Zoom-Regler in der App). Vorschau hat das Seitenverhältnis des Videos (nichts abgeschnitten) und zeigt
+  einen grünen Rahmen um die erkannte Karte + Warnung, wenn sie an den Bildrand stößt.
+- Auto-Scan (`checkMotionTick`): löst aus, wenn das Bild ~1,2 s ruhig ist UND sich im Kartenbereich
+  gegenüber der letzten Erfassung genug verändert hat (`NEW_CARD_FRACTION`) - nicht über reine Bewegung.
+  Dieselbe Karte direkt hintereinander zählt nicht doppelt (Hand/Schatten); echte 2. Kopie -> "+1"-Knopf.
+  Erfassung ohne Treffer setzt den Vergleich auf die vorherige Karte zurück. Getestet per simulierter
+  Kamera (Canvas-captureStream mit den Fotos), nicht mit echter Kamera.
 - Ablauf in `recognizeCard` (app.js): Namenszeile automatisch suchen (`locateNameRect`), OCR, dann
   Passcode-Zeile (`preparePasscodeCanvas`), dann Ausweich-Ausschnitte; Abbruch sobald "sure". Set-Code
   ist auf echten Fotos nicht lesbar -> kein eigener Schritt. Manche deutschen Namen fehlen bei YGOPRODeck

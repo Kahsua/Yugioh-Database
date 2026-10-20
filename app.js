@@ -1650,6 +1650,16 @@ async function startScanCamera() {
   setupScanZoom(scanStream.getVideoTracks()[0]);
 
   const video = $("#scan-video");
+  // Vorschau im Seitenverhältnis des Videos zeigen, damit nichts abgeschnitten
+  // wird - man sieht genau das, was die Kamera aufnimmt (Handy-Video ist
+  // meist 9:16, also schmaler als der 3:4-Platzhalter). Höhe auf ~70 % des
+  // Bildschirms begrenzen.
+  video.onloadedmetadata = () => {
+    const wrap = $("#scan-camera-wrap");
+    wrap.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
+    wrap.style.maxWidth = `calc(70vh * ${video.videoWidth} / ${video.videoHeight})`;
+    wrap.style.marginInline = "auto";
+  };
   video.srcObject = scanStream;
   video.classList.remove("hidden");
   $("#scan-placeholder").classList.add("hidden");
@@ -2089,30 +2099,51 @@ function resetScan() {
   $("#scan-queue").classList.add("hidden");
   $("#scan-queue").innerHTML = "";
   $("#scan-review").classList.add("hidden");
+  $("#scan-detect-box").classList.add("hidden");
+  $("#scan-camera-wrap").removeAttribute("style");
   $("#auto-scan-start-btn").classList.remove("hidden");
   $("#auto-scan-stop-btn").classList.add("hidden");
+  $("#auto-scan-plus-btn").classList.add("hidden");
 }
 
 // ============================================================
-// AUTO-SCAN (Serienerfassung per Bewegungserkennung)
+// AUTO-SCAN (Serienerfassung: "neue Karte liegt ruhig im Bild")
 // ============================================================
+// Statt auf Bewegung zu warten (ein schnell eingeworfener Kartenwechsel
+// fällt oft zwischen zwei Messungen), vergleicht der Auto-Scan das ruhige
+// Bild mit dem Bild der zuletzt erfassten Karte: Hat sich im Kartenbereich
+// genug verändert, ist es eine neue Karte. Eine Hand, die kurz ins Bild
+// greift, ohne die Karte zu wechseln, löst dadurch keine zweite Erfassung aus.
 let autoScanQueue = []; // {id, thumb, guess, matched, alternatives, confidence, quantity, status}
 let motionInterval = null;
-let motionSmallCanvas = document.createElement("canvas");
-motionSmallCanvas.width = 48;
-motionSmallCanvas.height = 48;
-let lastSmallFrameData = null;
-let stillFrameCount = 0;
-let capturedForCurrentObject = false;
+const motionCanvas = document.createElement("canvas");
+let lastGray = null; // Graubild der letzten Messung
+let lastCapturedGray = null; // Graubild bei der letzten Erfassung
+let stillTicks = 0;
+let lastScanHint = "";
+let lastRecognizedId = null; // zuletzt sicher erkannte Karte (Reihenfolge der Erfassung)
 let ocrChain = Promise.resolve(); // serialisiert OCR-Aufrufe (ein Worker kann nur 1 gleichzeitig)
 
-const STILL_THRESHOLD = 6; // Grauwert-Differenz unterhalb: "ruhig"
-const MOVE_THRESHOLD = 14; // oberhalb: "in Bewegung" (Hysterese gegen Flackern)
-const REQUIRED_STILL_TICKS = 3; // ~3 x 350ms = guten 1 Sek. Ruhe nötig vor Auslösen
-const MOTION_TICK_MS = 350;
+const MOTION_WIDTH = 160; // Breite des Vergleichsbilds in Pixeln
+const PIXEL_DIFF = 28; // Grauwertänderung, ab der ein Pixel als "verändert" zählt
+const STILL_FRACTION = 0.015; // weniger veränderte Pixel als das = Bild ist ruhig
+const NEW_CARD_FRACTION = 0.04; // mehr veränderte Kartenpixel als bei der letzten Erfassung = neue Karte
+const REQUIRED_STILL_TICKS = 4; // ~4 x 300 ms Ruhe nötig vor dem Auslösen
+const MOTION_TICK_MS = 300;
 
 $("#auto-scan-start-btn").addEventListener("click", startAutoScan);
 $("#auto-scan-stop-btn").addEventListener("click", stopAutoScanAndReview);
+// Zwei gleiche Karten direkt nacheinander sehen für die Kamera identisch aus -
+// dafür gibt es "+1": erhöht die Anzahl der zuletzt erfassten Karte.
+// (?. : falls ein Browser noch eine ältere index.html ohne den Knopf im Cache
+// hat, soll nicht das ganze Skript abbrechen)
+$("#auto-scan-plus-btn")?.addEventListener("click", () => {
+  const last = autoScanQueue[autoScanQueue.length - 1];
+  if (!last) return;
+  last.quantity++;
+  renderScanQueue();
+  showToast(`Anzahl der letzten Karte: ${last.quantity}`);
+});
 $("#scan-review-save-btn").addEventListener("click", saveAutoScanQueue);
 $("#scan-review-discard-btn").addEventListener("click", () => {
   autoScanQueue = [];
@@ -2122,9 +2153,11 @@ $("#scan-review-discard-btn").addEventListener("click", () => {
 
 async function startAutoScan() {
   autoScanQueue = [];
-  lastSmallFrameData = null;
-  stillFrameCount = 0;
-  capturedForCurrentObject = false;
+  lastGray = null;
+  lastCapturedGray = null;
+  stillTicks = 0;
+  lastScanHint = "";
+  lastRecognizedId = null;
   renderScanQueue();
 
   const stream = await startScanCamera();
@@ -2132,9 +2165,11 @@ async function startAutoScan() {
 
   $("#auto-scan-start-btn").classList.add("hidden");
   $("#auto-scan-stop-btn").classList.remove("hidden");
+  $("#auto-scan-plus-btn").classList.remove("hidden");
   $("#scan-capture-btn").classList.add("hidden"); // Auto-Scan löst selbst aus
+  $("#scan-card-guide").classList.add("hidden"); // stattdessen grüner Rahmen um die erkannte Karte
   $("#scan-queue").classList.remove("hidden");
-  $("#scan-status").textContent = "Auto-Scan läuft – Karten nacheinander in den Kamerabereich legen.";
+  setScanHint("Auto-Scan läuft – Karten nacheinander einlegen.");
 
   await getOcrWorker(); // Erkennung im Hintergrund vorladen
 
@@ -2148,6 +2183,8 @@ function stopAutoScan() {
   }
   stopScanCamera();
   $("#scan-motion-badge").classList.add("hidden");
+  $("#scan-detect-box").classList.add("hidden");
+  $("#auto-scan-plus-btn").classList.add("hidden");
 }
 
 function stopAutoScanAndReview() {
@@ -2155,9 +2192,34 @@ function stopAutoScanAndReview() {
   $("#scan-video").classList.add("hidden");
   $("#scan-card-guide").classList.add("hidden");
   $("#scan-placeholder").classList.remove("hidden");
+  $("#scan-camera-wrap").removeAttribute("style");
   $("#auto-scan-start-btn").classList.remove("hidden");
   $("#auto-scan-stop-btn").classList.add("hidden");
   showScanReview();
+}
+
+// Anteil der Pixel, die sich zwischen zwei Graubildern deutlich unterscheiden
+// - optional nur innerhalb eines Bereichs (box in Anteilen).
+function changedFraction(a, b, w, h, box) {
+  const x0 = box ? Math.floor(box.x * w) : 0;
+  const x1 = box ? Math.min(w, Math.ceil((box.x + box.w) * w)) : w;
+  const y0 = box ? Math.floor(box.y * h) : 0;
+  const y1 = box ? Math.min(h, Math.ceil((box.y + box.h) * h)) : h;
+  let changed = 0;
+  let total = 0;
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0, p = y * w + x0; x < x1; x++, p++) {
+      if (Math.abs(a[p] - b[p]) > PIXEL_DIFF) changed++;
+      total++;
+    }
+  }
+  return total ? changed / total : 0;
+}
+
+function setScanHint(text) {
+  if (text === lastScanHint) return;
+  lastScanHint = text;
+  $("#scan-status").textContent = text;
 }
 
 function checkMotionTick() {
@@ -2165,40 +2227,85 @@ function checkMotionTick() {
   if (!video.videoWidth) return;
 
   // Ganzes Kamerabild beobachten: die Karte muss nicht im Rahmen liegen
-  // (Scan-Halterung), sie wird beim Erfassen automatisch gefunden.
-  const ctx = motionSmallCanvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(video, 0, 0, motionSmallCanvas.width, motionSmallCanvas.height);
-  const frame = ctx.getImageData(0, 0, motionSmallCanvas.width, motionSmallCanvas.height).data;
+  // (Scan-Halterung), sie wird automatisch gefunden.
+  const w = MOTION_WIDTH;
+  const h = Math.round((w * video.videoHeight) / video.videoWidth);
+  motionCanvas.width = w;
+  motionCanvas.height = h;
+  const ctx = motionCanvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(video, 0, 0, w, h);
+  const rgba = ctx.getImageData(0, 0, w, h).data;
+  const gray = new Uint8ClampedArray(w * h);
+  for (let i = 0, p = 0; p < gray.length; i += 4, p++) gray[p] = (rgba[i] * 0.299 + rgba[i + 1] * 0.587 + rgba[i + 2] * 0.114) | 0;
 
-  if (lastSmallFrameData) {
-    let diffSum = 0;
-    const pixelCount = frame.length / 4;
-    for (let i = 0; i < frame.length; i += 4) {
-      const gray1 = (frame[i] + frame[i + 1] + frame[i + 2]) / 3;
-      const gray2 = (lastSmallFrameData[i] + lastSmallFrameData[i + 1] + lastSmallFrameData[i + 2]) / 3;
-      diffSum += Math.abs(gray1 - gray2);
-    }
-    const avgDiff = diffSum / pixelCount;
+  const box = ScanEngine.locateCard(rgba, w, h);
+  showDetectedCard(video, box);
 
-    if (avgDiff > MOVE_THRESHOLD) {
-      stillFrameCount = 0;
-      capturedForCurrentObject = false;
-      $("#scan-motion-badge").classList.add("hidden");
-    } else if (avgDiff < STILL_THRESHOLD) {
-      stillFrameCount++;
-      if (stillFrameCount >= REQUIRED_STILL_TICKS && !capturedForCurrentObject) {
-        capturedForCurrentObject = true;
-        $("#scan-motion-badge").classList.add("hidden");
-        captureForAutoScan();
-      } else if (!capturedForCurrentObject) {
-        $("#scan-motion-badge").classList.remove("hidden");
-      }
-    }
+  const moved = lastGray && lastGray.length === gray.length ? changedFraction(gray, lastGray, w, h) : 1;
+  stillTicks = moved < STILL_FRACTION ? stillTicks + 1 : 0;
+  lastGray = gray;
+
+  if (!box) {
+    $("#scan-motion-badge").classList.add("hidden");
+    setScanHint("Keine vollständige Karte im Bild – Karte einlegen, ggf. Zoom verringern.");
+    return;
   }
-  lastSmallFrameData = frame;
+  const touchesEdge = box.y < 0.005 || box.y + box.h > 0.995 || box.x < 0.005 || box.x + box.w > 0.995;
+  setScanHint(
+    touchesEdge
+      ? "⚠ Karte stößt an den Bildrand – Zoom etwas verringern."
+      : "Auto-Scan läuft – Karten nacheinander einlegen."
+  );
+
+  const isNew =
+    !lastCapturedGray || lastCapturedGray.length !== gray.length || changedFraction(gray, lastCapturedGray, w, h, box) > NEW_CARD_FRACTION;
+  if (!isNew) {
+    $("#scan-motion-badge").classList.add("hidden");
+    return;
+  }
+  if (stillTicks >= REQUIRED_STILL_TICKS) {
+    const previousGray = lastCapturedGray;
+    lastCapturedGray = gray;
+    $("#scan-motion-badge").classList.add("hidden");
+    captureForAutoScan(gray, previousGray);
+  } else {
+    $("#scan-motion-badge").classList.remove("hidden"); // neue Karte erkannt, wartet auf Ruhe
+  }
 }
 
-function captureForAutoScan() {
+// Grüner Rahmen um die erkannte Karte in der Vorschau
+function showDetectedCard(video, box) {
+  const el = $("#scan-detect-box");
+  if (!box) {
+    el.classList.add("hidden");
+    return;
+  }
+  const videoRect = video.getBoundingClientRect();
+  const wrapRect = $("#scan-camera-wrap").getBoundingClientRect();
+  // Umkehrung von getCoverSourceRect: Videoanteile -> Bildschirmposition
+  const videoAspect = video.videoWidth / video.videoHeight;
+  const boxAspect = videoRect.width / videoRect.height;
+  let scale, offX, offY;
+  if (videoAspect > boxAspect) {
+    scale = videoRect.height / video.videoHeight;
+    offX = (videoRect.width - video.videoWidth * scale) / 2;
+    offY = 0;
+  } else {
+    scale = videoRect.width / video.videoWidth;
+    offX = 0;
+    offY = (videoRect.height - video.videoHeight * scale) / 2;
+  }
+  el.style.left = videoRect.left - wrapRect.left + offX + box.x * video.videoWidth * scale + "px";
+  el.style.top = videoRect.top - wrapRect.top + offY + box.y * video.videoHeight * scale + "px";
+  el.style.width = box.w * video.videoWidth * scale + "px";
+  el.style.height = box.h * video.videoHeight * scale + "px";
+  el.classList.remove("hidden");
+}
+
+// gray / previousGray: Vergleichsbild dieser Erfassung und der davor - wird
+// gebraucht, falls sich die Erfassung als "keine Karte" herausstellt (z.B.
+// eine Hand lag still im Bild), um wieder mit der vorherigen Karte zu vergleichen.
+function captureForAutoScan(gray = null, previousGray = null) {
   const cardCanvas = captureCardCanvas();
   const thumb = cardCanvas.toDataURL("image/jpeg", 0.75);
 
@@ -2211,6 +2318,8 @@ function captureForAutoScan() {
     confidence: "none",
     quantity: 1,
     status: "ocr",
+    gray,
+    previousGray,
   };
   autoScanQueue.push(item);
   renderScanQueue();
@@ -2226,8 +2335,18 @@ async function processAutoScanItem(item, cardCanvas) {
     item.confidence = result.confidence;
     const match = result.confidence !== "none" ? result.cards[0] : null;
 
+    if (match && result.confidence === "sure" && match.id === lastRecognizedId) {
+      // Dieselbe Karte wie bei der Erfassung davor: fast immer dieselbe
+      // physische Karte (Hand lag kurz still darauf, Schatten ...). Eine
+      // echte zweite Kopie zählt der "+1"-Knopf - zwei gleiche Karten sehen
+      // in der Halterung ohnehin identisch aus.
+      autoScanQueue = autoScanQueue.filter((q) => q.id !== item.id);
+      refreshScanViews();
+      return;
+    }
     if (match && result.confidence === "sure") {
-      // Dieselbe Karte in diesem Lauf schon sicher erkannt? Dann nur Anzahl erhöhen.
+      lastRecognizedId = match.id;
+      // Dieselbe Karte in diesem Lauf schon früher sicher erkannt? Dann nur Anzahl erhöhen.
       const existing = autoScanQueue.find(
         (q) => q.id !== item.id && q.confidence === "sure" && q.matched && q.matched.id === match.id
       );
@@ -2243,6 +2362,10 @@ async function processAutoScanItem(item, cardCanvas) {
   } catch (err) {
     item.status = "error";
   }
+  // Keine Karte erkannt -> war vermutlich keine neue Karte (Hand, Schatten):
+  // wieder mit der vorherigen Karte vergleichen, damit sie nicht doppelt zählt
+  if (!item.matched && item.gray && lastCapturedGray === item.gray) lastCapturedGray = item.previousGray;
+  item.gray = item.previousGray = null;
   refreshScanViews();
 }
 

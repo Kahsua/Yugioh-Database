@@ -593,6 +593,14 @@ input:focus, select:focus {
 .scan-zoom { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.7rem; font-size: 0.8rem; color: var(--text-muted); }
 .scan-zoom input[type="range"] { flex: 1; accent-color: var(--gold); }
 #scan-zoom-val { font-family: var(--font-mono); min-width: 3.2em; text-align: right; }
+.scan-detect-box {
+  position: absolute;
+  border: 3px solid #3ecf8e;
+  border-radius: 6px;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  transition: all 0.15s ease;
+}
 .scan-motion-badge {
   position: absolute; bottom: 0.7rem; left: 50%; transform: translateX(-50%);
   background: rgba(62, 142, 107, 0.9); color: white; font-size: 0.72rem; font-weight: 700;

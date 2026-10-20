@@ -17,7 +17,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=8" />
+<link rel="stylesheet" href="style.css?v=9" />
 </head>
 <body>
 
@@ -164,7 +164,8 @@
         <img id="scan-captured-img" class="hidden" alt="Aufgenommenes Foto" />
         <div class="scan-placeholder" id="scan-placeholder">📷</div>
         <div class="scan-card-guide hidden" id="scan-card-guide"></div>
-        <div class="scan-motion-badge hidden" id="scan-motion-badge">Bereich ruhig – erfasse …</div>
+        <div class="scan-detect-box hidden" id="scan-detect-box"></div>
+        <div class="scan-motion-badge hidden" id="scan-motion-badge">Neue Karte – kurz ruhig halten …</div>
       </div>
       <label class="scan-zoom hidden" id="scan-zoom-wrap">
         <span>Zoom</span>
@@ -183,6 +184,7 @@
       <!-- Auto-Scan-Modus -->
       <div class="scan-actions hidden" id="scan-auto-actions">
         <button id="auto-scan-start-btn" class="btn btn-primary">Auto-Scan starten</button>
+        <button id="auto-scan-plus-btn" class="btn-ghost hidden" title="Gleiche Karte nochmal eingelegt">+1 gleiche Karte</button>
         <button id="auto-scan-stop-btn" class="btn-ghost hidden">Scan-Lauf beenden (<span id="auto-scan-count">0</span>)</button>
       </div>
 
@@ -418,6 +420,6 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="config.js"></script>
 <script src="scan-engine.js?v=2"></script>
-<script src="app.js?v=17"></script>
+<script src="app.js?v=18"></script>
 </body>
 </html>
