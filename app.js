@@ -2165,9 +2165,93 @@ async function startSeries() {
     // Fokus-Steuerung nicht verfügbar
   }
   setupSeriesZoom(track);
-  $("#series-video").srcObject = seriesStream;
+  setupSeriesTorch(track);
+  setupSeriesCropToggle();
+  const video = $("#series-video");
+  video.onloadedmetadata = updateSeriesCropShade;
+  video.srcObject = seriesStream;
   updateSeriesStatus();
 }
+
+// Taschenlampe (Handy-LED), falls das Gerät sie per Browser freigibt (Chrome/Android).
+// Bei Hüllen/Foil kann sie einen Spiegelungsfleck erzeugen - daher nur auf Knopfdruck.
+function setupSeriesTorch(track) {
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  if (!caps.torch) return;
+  const b = document.createElement("button");
+  b.className = "series-zoom-btn series-tool-btn";
+  b.textContent = "🔦";
+  b.title = "Licht an/aus";
+  let on = false;
+  b.addEventListener("click", () => {
+    on = !on;
+    track.applyConstraints({ advanced: [{ torch: on }] }).catch(() => {
+      on = false;
+      showToast("Licht konnte nicht eingeschaltet werden.");
+    });
+    b.classList.toggle("active", on);
+  });
+  $("#series-zoom").appendChild(b);
+}
+
+// Oberen Bildbereich abschneiden: In der Scan-Halterung liegt die Karte im
+// unteren Teil des Bildes, oben ist nur Halterung. Ohne diesen Teil wird die
+// Karte bei gleicher Bildgröße (SERIES_IMAGE_SIZE) größer abgebildet -> kleine
+// Schrift (Passcode, Set-Code) besser lesbar, Upload kleiner. Die Karte begann
+// bei Alex' Halterung bei ~47 % der Bildhöhe; 30 % lassen Puffer, falls sich
+// Handy oder Karte etwas verschieben. Abschaltbar (z.B. ohne Halterung), wird gemerkt.
+const SERIES_TOP_CROP = 0.3;
+const SERIES_CROP_KEY = "kartenarchiv-series-crop";
+
+function seriesCropEnabled() {
+  try {
+    return localStorage.getItem(SERIES_CROP_KEY) !== "off";
+  } catch (err) {
+    return true;
+  }
+}
+
+function setupSeriesCropToggle() {
+  const b = document.createElement("button");
+  b.className = "series-zoom-btn series-tool-btn";
+  b.textContent = "✂ Oben";
+  b.title = "Oberen Bildbereich (nur Halterung) nicht an die KI schicken";
+  b.classList.toggle("active", seriesCropEnabled());
+  b.addEventListener("click", () => {
+    const enable = !seriesCropEnabled();
+    try {
+      localStorage.setItem(SERIES_CROP_KEY, enable ? "on" : "off");
+    } catch (err) {
+      // ignorieren
+    }
+    b.classList.toggle("active", enable);
+    updateSeriesCropShade();
+  });
+  $("#series-zoom").appendChild(b);
+}
+
+// Abgeschnittenen Bereich in der Vorschau abdunkeln (Video ist "contain"
+// eingepasst, daher die tatsächlich sichtbare Bildfläche ausrechnen)
+function updateSeriesCropShade() {
+  const video = $("#series-video");
+  const shade = $("#series-crop-shade");
+  if (!video.videoWidth || !seriesCropEnabled()) {
+    shade.classList.add("hidden");
+    return;
+  }
+  const box = video.getBoundingClientRect();
+  const scale = Math.min(box.width / video.videoWidth, box.height / video.videoHeight);
+  const w = video.videoWidth * scale;
+  const h = video.videoHeight * scale;
+  shade.style.left = (box.width - w) / 2 + "px";
+  shade.style.top = (box.height - h) / 2 + "px";
+  shade.style.width = w + "px";
+  shade.style.height = h * SERIES_TOP_CROP + "px";
+  shade.classList.remove("hidden");
+}
+window.addEventListener("resize", () => {
+  if (seriesStream) updateSeriesCropShade();
+});
 
 function stopSeriesCamera() {
   if (seriesStream) {
@@ -2229,17 +2313,21 @@ function setupSeriesZoom(track) {
   apply(current);
 }
 
-// Ganzes Kamerabild als JPEG (längste Seite SERIES_IMAGE_SIZE) + Vorschaubild
+// Kamerabild (ggf. ohne oberen Bereich) als JPEG, längste Seite
+// SERIES_IMAGE_SIZE, + Vorschaubild
 function seriesCapture() {
   const video = $("#series-video");
   if (!seriesStream || !video.videoWidth) return;
-  const scale = Math.min(1, SERIES_IMAGE_SIZE / Math.max(video.videoWidth, video.videoHeight));
+  const sy = seriesCropEnabled() ? Math.round(video.videoHeight * SERIES_TOP_CROP) : 0;
+  const sw = video.videoWidth;
+  const sh = video.videoHeight - sy;
+  const scale = Math.min(1, SERIES_IMAGE_SIZE / Math.max(sw, sh));
   const c = document.createElement("canvas");
-  c.width = Math.round(video.videoWidth * scale);
-  c.height = Math.round(video.videoHeight * scale);
+  c.width = Math.round(sw * scale);
+  c.height = Math.round(sh * scale);
   const ctx = c.getContext("2d");
   ctx.imageSmoothingQuality = "high";
-  ctx.drawImage(video, 0, 0, c.width, c.height);
+  ctx.drawImage(video, 0, sy, sw, sh, 0, 0, c.width, c.height);
   const t = document.createElement("canvas");
   t.width = 120;
   t.height = Math.round((120 * c.height) / c.width);

@@ -16,7 +16,7 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
 
 ## Regeln
 1. **Cache-Busting:** Bei JEDER Änderung an `app.js`/`scan-engine.js`/`style.css` die `?v=` in `index.html` hochzählen
-   (aktuell app.js v25, scan-engine.js v4, style.css v12 – Nummern nie wiederverwenden, auch nicht nach einem Revert) und bei Shell-Änderungen `CACHE_NAME` in `service-worker.js` erhöhen.
+   (aktuell app.js v26, scan-engine.js v4, style.css v14 – Nummern nie wiederverwenden, auch nicht nach einem Revert) und bei Shell-Änderungen `CACHE_NAME` in `service-worker.js` erhöhen.
 2. Supabase-Client heißt `supabaseClient` (nie `supabase` – Namenskonflikt mit dem CDN-Global).
 3. Nie den `service_role`-Key ins Frontend. Sicherheit läuft über RLS.
 4. Listen >1000 Zeilen nur über `fetchAllRows` (`.range()`) mit `.order("created_at").order("id")`.
@@ -32,7 +32,9 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
 
 ## Kartenscan
 - **Serie (KI)** = Auto-Scan-Modus: eigener Vollbild-Scanner `#series-stage` (✕/Zurück/„Fertig“ -> Übersicht),
-  pro Karte Knopf „Aufnehmen“ (keine Bewegungserkennung, kein Rahmen), Zoom als feste Stufen-Knöpfe.
+  pro Karte Knopf „Aufnehmen“ (keine Bewegungserkennung, kein Rahmen), Zoom als feste Stufen-Knöpfe,
+  🔦 Taschenlampe (falls Gerät `torch` kann), „✂ Oben“ schneidet die oberen 30 % ab (`SERIES_TOP_CROP`, nur
+  Halterung zu sehen; Karte beginnt bei ~47 %, Rest ist Puffer; abschaltbar, gemerkt, in Vorschau abgedunkelt).
   Ganzes Kamerabild (längste Seite 1280 px, JPEG) geht in Bündeln à 8 (`SERIES_BATCH`, max. 2 parallel)
   an die Edge Function `supabase/functions/scan-card` -> Google Gemini (`gemini-3.5-flash-lite`, Gratis-Tarif,
   Key als Supabase-Secret `GEMINI_API_KEY`, nur angemeldete Nutzer). Gemini liefert je Foto

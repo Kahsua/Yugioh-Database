@@ -612,10 +612,16 @@ body.scan-open { overflow: hidden; }
 /* Ganzes Kamerabild sichtbar (contain) - genau das geht an die KI */
 .series-camera { position: relative; flex: 1 1 auto; min-height: 0; border-radius: 10px; overflow: hidden; background: #000; }
 .series-camera video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.series-crop-shade {
+  position: absolute; background: rgba(0, 0, 0, 0.55); border-bottom: 2px dashed rgba(224, 193, 92, 0.8);
+  display: flex; align-items: center; justify-content: center; pointer-events: none;
+}
+.series-crop-shade span { color: rgba(255, 255, 255, 0.75); font-size: 0.75rem; font-family: var(--font-mono); }
+.series-tool-btn { min-width: 0; white-space: nowrap; }
 .series-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
 .series-flash.on { animation: seriesFlash 0.35s ease-out; }
 @keyframes seriesFlash { from { opacity: 0.7; } to { opacity: 0; } }
-.series-zoom { display: flex; gap: 0.4rem; justify-content: center; flex: none; }
+.series-zoom { display: flex; flex-wrap: wrap; gap: 0.4rem; justify-content: center; flex: none; }
 .series-zoom:empty { display: none; }
 .series-zoom-btn {
   min-width: 56px; padding: 0.45rem 0.7rem; border-radius: 20px;
