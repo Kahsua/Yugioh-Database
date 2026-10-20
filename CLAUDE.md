@@ -16,7 +16,7 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
 
 ## Regeln
 1. **Cache-Busting:** Bei JEDER Änderung an `app.js`/`scan-engine.js`/`style.css` die `?v=` in `index.html` hochzählen
-   (aktuell app.js v23, scan-engine.js v4, style.css v11 – Nummern nie wiederverwenden, auch nicht nach einem Revert) und bei Shell-Änderungen `CACHE_NAME` in `service-worker.js` erhöhen.
+   (aktuell app.js v25, scan-engine.js v4, style.css v12 – Nummern nie wiederverwenden, auch nicht nach einem Revert) und bei Shell-Änderungen `CACHE_NAME` in `service-worker.js` erhöhen.
 2. Supabase-Client heißt `supabaseClient` (nie `supabase` – Namenskonflikt mit dem CDN-Global).
 3. Nie den `service_role`-Key ins Frontend. Sicherheit läuft über RLS.
 4. Listen >1000 Zeilen nur über `fetchAllRows` (`.range()`) mit `.order("created_at").order("id")`.
@@ -31,6 +31,21 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
   3 Tage gecacht (`fetchFullYgoDatabase`).
 
 ## Kartenscan
+- **Serie (KI)** = Auto-Scan-Modus: eigener Vollbild-Scanner `#series-stage` (✕/Zurück/„Fertig“ -> Übersicht),
+  pro Karte Knopf „Aufnehmen“ (keine Bewegungserkennung, kein Rahmen), Zoom als feste Stufen-Knöpfe.
+  Ganzes Kamerabild (längste Seite 1280 px, JPEG) geht in Bündeln à 8 (`SERIES_BATCH`, max. 2 parallel)
+  an die Edge Function `supabase/functions/scan-card` -> Google Gemini (`gemini-3.5-flash-lite`, Gratis-Tarif,
+  Key als Supabase-Secret `GEMINI_API_KEY`, nur angemeldete Nutzer). Gemini liefert je Foto
+  cardFound/name/setCode/passcode, die App ordnet per `ScanEngine.rankCandidates` zu.
+  Gemessen: Bündel mit 7-8 Fotos ~25-30 s (ein Einzelfoto dauert genauso lang!), 7/7 sicher richtig.
+  Bei 429/503 automatisch bis zu 3 neue Versuche. Deploy: `npx.cmd supabase functions deploy scan-card
+  --project-ref psijjhnajmayblxgyurl --use-api` (Supabase-CLI ist als Alex angemeldet; in PowerShell
+  `npx.cmd`, `npx` ist durch die Ausführungsrichtlinie blockiert). Für Tests ohne App-Login kennt die
+  Funktion den Header `x-scan-test-token` = Secret `SCAN_TEST_TOKEN` – nur während Tests setzen, danach
+  `supabase secrets unset SCAN_TEST_TOKEN`. supabase-js: `supabaseClient.functions` liefert bei jedem
+  Zugriff ein neues Objekt (Wrapper dort greifen nicht).
+- Getestete Gemini-Modelle (Okt. 2026, Gratis): 2.5-Modelle für den Key nicht verfügbar; flash-latest /
+  3.8-flash oft "überlastet" und langsam; 3.5-flash-lite zuverlässig. Claude-API kostet -> nicht verwenden.
 - Karte wird im Kamerabild automatisch gefunden (`detectCardBox` -> `ScanEngine.locateCard`, braucht hellen
   Hintergrund), der Rahmen ist nur Fallback. Alex nutzt eine feste Scan-Halterung (Karte unten mittig,
   Zoom ~1.3, Zoom-Regler in der App). Auto-Scan beobachtet das ganze Bild auf Bewegung.
@@ -52,11 +67,8 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
 - Kartenscan: mehr echte Fotos nach `test-scans/` (Dateiname = Kartenname, ID in photos.js eintragen),
   v.a. Monster mit Stufen, Xyz/Link/Pendel, Foil-Namen, englische Karten; Passcode-Lesung (~3/7)
   verbessern; ggf. danach Artwork-Erkennung per Bild-Fingerabdruck
-- **Geplant: KI-Erkennung per Google Gemini (Flash, Gratis-Tarif)** – Foto vom ganzen Bild (ohne Rahmen)
-  an eine Supabase Edge Function (hält den Gemini-Key als Secret, Key nie ins Frontend), Gemini liefert
-  Name/Set-Code/"keine Karte", App gleicht mit der Kartendatenbank ab. Alex wünscht: Auto-Scan nur per
-  Start-Knopf, Zoom per festen Knöpfen statt Regler, generell aufgeräumtere Scanner-UI (Vollbild mit ✕).
-  Claude-API ist kostenpflichtig -> nicht verwenden.
+- Serien-Scan (KI) von Alex am Handy noch nicht getestet; Einzelbild nutzt weiter Tesseract (ggf. später
+  ebenfalls Gemini als Rückfall, wenn "unsicher").
 
 ## Lehren aus den Scanner-Versuchen (Okt. 2026)
 - Stand v17 (`c61c234`) war für Alex am besten; drei weitere Versionen (Pixel-/Fingerabdruck-Vergleich

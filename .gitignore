@@ -9,3 +9,6 @@ backup-passwort.txt
 
 # Testfotos für die Kartenerkennung (bleiben lokal)
 test-scans/
+
+# Supabase-CLI (lokale Hilfsdateien)
+supabase/.temp/

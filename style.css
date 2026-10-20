@@ -593,12 +593,47 @@ input:focus, select:focus {
 .scan-zoom { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.7rem; font-size: 0.8rem; color: var(--text-muted); }
 .scan-zoom input[type="range"] { flex: 1; accent-color: var(--gold); }
 #scan-zoom-val { font-family: var(--font-mono); min-width: 3.2em; text-align: right; }
-.scan-motion-badge {
-  position: absolute; bottom: 0.7rem; left: 50%; transform: translateX(-50%);
-  background: rgba(62, 142, 107, 0.9); color: white; font-size: 0.72rem; font-weight: 700;
-  padding: 0.35rem 0.8rem; border-radius: 20px; white-space: nowrap;
-  animation: fadeUp 0.15s ease;
+/* ===== Vollbild-Scanner für den Serien-Scan (KI) ===== */
+body.scan-open { overflow: hidden; }
+.series-stage {
+  position: fixed; inset: 0; z-index: 900;
+  background: #05060b;
+  display: flex; flex-direction: column; gap: 0.5rem;
+  padding: max(0.5rem, env(safe-area-inset-top)) 0.75rem max(0.75rem, env(safe-area-inset-bottom));
 }
+.series-bar { display: flex; align-items: center; gap: 0.75rem; flex: none; }
+.series-title { font-family: var(--font-display); color: var(--gold-soft); font-size: 1rem; }
+.series-count { flex: 1; color: var(--text-muted); font-size: 0.85rem; font-family: var(--font-mono); }
+.series-close {
+  width: 44px; height: 44px; border-radius: 50%; flex: none;
+  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--panel-border);
+  color: var(--text); font-size: 1.25rem; cursor: pointer;
+}
+/* Ganzes Kamerabild sichtbar (contain) - genau das geht an die KI */
+.series-camera { position: relative; flex: 1 1 auto; min-height: 0; border-radius: 10px; overflow: hidden; background: #000; }
+.series-camera video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.series-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
+.series-flash.on { animation: seriesFlash 0.35s ease-out; }
+@keyframes seriesFlash { from { opacity: 0.7; } to { opacity: 0; } }
+.series-zoom { display: flex; gap: 0.4rem; justify-content: center; flex: none; }
+.series-zoom:empty { display: none; }
+.series-zoom-btn {
+  min-width: 56px; padding: 0.45rem 0.7rem; border-radius: 20px;
+  background: rgba(255, 255, 255, 0.06); border: 1px solid var(--panel-border);
+  color: var(--text); font-family: var(--font-mono); font-size: 0.85rem; cursor: pointer;
+}
+.series-zoom-btn.active { background: var(--gold); color: #1a1406; border-color: var(--gold); font-weight: 700; }
+.series-status { margin: 0; font-size: 0.8rem; color: var(--text-muted); text-align: center; min-height: 1.1em; flex: none; }
+.series-strip {
+  display: grid; grid-auto-flow: column; grid-auto-columns: 44px; gap: 0.4rem;
+  overflow-x: auto; flex: none; min-height: 0;
+}
+.series-strip:empty { display: none; }
+.series-actions { display: flex; gap: 0.6rem; flex: none; }
+.series-actions .btn-ghost { flex: 1; }
+.series-shot { flex: 2; font-size: 1.1rem; padding: 1rem; }
+.scan-review-progress { color: var(--gold-soft); font-size: 0.82rem; margin: 0 0 0.5rem; min-height: 0; }
+.scan-review-progress:empty { display: none; }
 
 .scan-mode-toggle { margin-bottom: 1.1rem; width: 100%; }
 .scan-mode-toggle .lang-btn { flex: 1; padding: 0.65rem; font-family: var(--font-body); }

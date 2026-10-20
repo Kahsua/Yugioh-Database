@@ -1602,6 +1602,8 @@ $all("#scan-mode-toggle .lang-btn").forEach((btn) => {
     $("#scan-intro-auto").classList.toggle("hidden", scanMode !== "auto");
     $("#scan-single-actions").classList.toggle("hidden", scanMode !== "single");
     $("#scan-auto-actions").classList.toggle("hidden", scanMode !== "auto");
+    // Die Serie hat ihren eigenen Vollbild-Scanner - die Kamerafläche der Seite gehört zum Einzelbild
+    $("#scan-camera-wrap").classList.toggle("hidden", scanMode !== "single");
   });
 });
 
@@ -2086,170 +2088,309 @@ function resetScan() {
   $("#scan-status").textContent = "";
   $("#scan-search-status").textContent = "";
   $("#scan-results").innerHTML = "";
-  $("#scan-queue").classList.add("hidden");
-  $("#scan-queue").innerHTML = "";
   $("#scan-review").classList.add("hidden");
-  $("#auto-scan-start-btn").classList.remove("hidden");
-  $("#auto-scan-stop-btn").classList.add("hidden");
 }
 
 // ============================================================
-// AUTO-SCAN (Serienerfassung per Bewegungserkennung)
+// SERIEN-SCAN MIT KI (Google Gemini über die Edge Function "scan-card")
 // ============================================================
-let autoScanQueue = []; // {id, thumb, guess, matched, alternatives, confidence, quantity, status}
-let motionInterval = null;
-let motionSmallCanvas = document.createElement("canvas");
-motionSmallCanvas.width = 48;
-motionSmallCanvas.height = 48;
-let lastSmallFrameData = null;
-let stillFrameCount = 0;
-let capturedForCurrentObject = false;
-let ocrChain = Promise.resolve(); // serialisiert OCR-Aufrufe (ein Worker kann nur 1 gleichzeitig)
+// Ablauf: Vollbild-Kamera -> pro Karte "Aufnehmen" drücken -> Fotos werden
+// im Hintergrund in Bündeln (SERIES_BATCH) an Gemini geschickt -> Ergebnis
+// wird mit der Kartendatenbank abgeglichen (ScanEngine) -> "Fertig" ->
+// Übersicht prüfen -> speichern. Keine Bewegungserkennung, kein Rahmen:
+// das ganze Kamerabild geht an die KI.
+// Ein Bündel mit 7-8 Fotos braucht ~30 s, so lange wie ein einzelnes Foto -
+// und zählt beim Gratis-Kontingent nur als EINE Anfrage.
+let autoScanQueue = []; // {id, thumb, image, guess, matched, alternatives, confidence, quantity, status, error}
+let seriesStream = null;
+let seriesInFlight = 0;
+let seriesHistoryPushed = false;
 
-const STILL_THRESHOLD = 6; // Grauwert-Differenz unterhalb: "ruhig"
-const MOVE_THRESHOLD = 14; // oberhalb: "in Bewegung" (Hysterese gegen Flackern)
-const REQUIRED_STILL_TICKS = 3; // ~3 x 350ms = guten 1 Sek. Ruhe nötig vor Auslösen
-const MOTION_TICK_MS = 350;
+const SERIES_BATCH = 8; // Fotos pro Anfrage an Gemini (Funktion erlaubt max. 10)
+const SERIES_MAX_IN_FLIGHT = 2; // gleichzeitige Anfragen
+const SERIES_IMAGE_SIZE = 1280; // längste Bildseite in Pixeln, die an Gemini geht
+const SERIES_RETRY_DELAYS = [8000, 20000, 45000]; // bei "überlastet"/"Limit" erneut versuchen
+const SERIES_ZOOM_STEPS = [1, 1.25, 1.5, 2];
 
-$("#auto-scan-start-btn").addEventListener("click", startAutoScan);
-$("#auto-scan-stop-btn").addEventListener("click", stopAutoScanAndReview);
+$("#auto-scan-start-btn").addEventListener("click", startSeries);
+$("#series-shot").addEventListener("click", seriesCapture);
+$("#series-done").addEventListener("click", finishSeries);
+$("#series-close").addEventListener("click", finishSeries);
 $("#scan-review-save-btn").addEventListener("click", saveAutoScanQueue);
 $("#scan-review-discard-btn").addEventListener("click", () => {
   autoScanQueue = [];
   $("#scan-review").classList.add("hidden");
   resetScan();
 });
+$("#scan-review-retry-btn").addEventListener("click", () => {
+  autoScanQueue.filter((q) => q.status === "error" && q.image).forEach((q) => (q.status = "pending"));
+  refreshScanViews();
+  pumpSeriesQueue(true);
+});
+// Android-Zurück schließt den Vollbild-Scanner wie "Fertig"
+window.addEventListener("popstate", () => {
+  if (seriesHistoryPushed) {
+    seriesHistoryPushed = false;
+    finishSeries();
+  }
+});
 
-async function startAutoScan() {
+async function startSeries() {
   autoScanQueue = [];
-  lastSmallFrameData = null;
-  stillFrameCount = 0;
-  capturedForCurrentObject = false;
   renderScanQueue();
-
-  const stream = await startScanCamera();
-  if (!stream) return;
-
-  $("#auto-scan-start-btn").classList.add("hidden");
-  $("#auto-scan-stop-btn").classList.remove("hidden");
-  $("#scan-capture-btn").classList.add("hidden"); // Auto-Scan löst selbst aus
-  $("#scan-queue").classList.remove("hidden");
-  $("#scan-status").textContent = "Auto-Scan läuft – Karten nacheinander in den Kamerabereich legen.";
-
-  await getOcrWorker(); // Erkennung im Hintergrund vorladen
-
-  motionInterval = setInterval(checkMotionTick, MOTION_TICK_MS);
+  ensureCardDbLoaded().catch(() => {});
+  $("#series-status").textContent = "Kamera wird gestartet …";
+  $("#series-stage").classList.remove("hidden");
+  document.body.classList.add("scan-open");
+  if (!seriesHistoryPushed) {
+    seriesHistoryPushed = true;
+    history.pushState({ ygoSeries: true }, "");
+  }
+  try {
+    seriesStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 2560 }, height: { ideal: 1440 } },
+      audio: false,
+    });
+  } catch (err) {
+    $("#series-status").textContent = "Kamera-Zugriff nicht möglich (" + err.message + ").";
+    return;
+  }
+  const track = seriesStream.getVideoTracks()[0];
+  try {
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    if (caps.focusMode && caps.focusMode.includes("continuous")) {
+      await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+    }
+  } catch (err) {
+    // Fokus-Steuerung nicht verfügbar
+  }
+  setupSeriesZoom(track);
+  $("#series-video").srcObject = seriesStream;
+  updateSeriesStatus();
 }
 
+function stopSeriesCamera() {
+  if (seriesStream) {
+    seriesStream.getTracks().forEach((t) => t.stop());
+    seriesStream = null;
+  }
+  $("#series-video").srcObject = null;
+}
+
+// Für Tab-/Moduswechsel (Name aus der alten Auto-Scan-Version)
 function stopAutoScan() {
-  if (motionInterval) {
-    clearInterval(motionInterval);
-    motionInterval = null;
-  }
-  stopScanCamera();
-  $("#scan-motion-badge").classList.add("hidden");
+  stopSeriesCamera();
+  $("#series-stage").classList.add("hidden");
+  document.body.classList.remove("scan-open");
 }
 
-function stopAutoScanAndReview() {
+// "Fertig" / ✕ / Zurück: Kamera aus, Rest abschicken, Übersicht zeigen
+function finishSeries() {
   stopAutoScan();
-  $("#scan-video").classList.add("hidden");
-  $("#scan-card-guide").classList.add("hidden");
-  $("#scan-placeholder").classList.remove("hidden");
-  $("#auto-scan-start-btn").classList.remove("hidden");
-  $("#auto-scan-stop-btn").classList.add("hidden");
-  showScanReview();
-}
-
-function checkMotionTick() {
-  const video = $("#scan-video");
-  if (!video.videoWidth) return;
-
-  // Ganzes Kamerabild beobachten: die Karte muss nicht im Rahmen liegen
-  // (Scan-Halterung), sie wird beim Erfassen automatisch gefunden.
-  const ctx = motionSmallCanvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(video, 0, 0, motionSmallCanvas.width, motionSmallCanvas.height);
-  const frame = ctx.getImageData(0, 0, motionSmallCanvas.width, motionSmallCanvas.height).data;
-
-  if (lastSmallFrameData) {
-    let diffSum = 0;
-    const pixelCount = frame.length / 4;
-    for (let i = 0; i < frame.length; i += 4) {
-      const gray1 = (frame[i] + frame[i + 1] + frame[i + 2]) / 3;
-      const gray2 = (lastSmallFrameData[i] + lastSmallFrameData[i + 1] + lastSmallFrameData[i + 2]) / 3;
-      diffSum += Math.abs(gray1 - gray2);
-    }
-    const avgDiff = diffSum / pixelCount;
-
-    if (avgDiff > MOVE_THRESHOLD) {
-      stillFrameCount = 0;
-      capturedForCurrentObject = false;
-      $("#scan-motion-badge").classList.add("hidden");
-    } else if (avgDiff < STILL_THRESHOLD) {
-      stillFrameCount++;
-      if (stillFrameCount >= REQUIRED_STILL_TICKS && !capturedForCurrentObject) {
-        capturedForCurrentObject = true;
-        $("#scan-motion-badge").classList.add("hidden");
-        captureForAutoScan();
-      } else if (!capturedForCurrentObject) {
-        $("#scan-motion-badge").classList.remove("hidden");
-      }
-    }
+  if (seriesHistoryPushed) {
+    seriesHistoryPushed = false;
+    history.back();
   }
-  lastSmallFrameData = frame;
+  pumpSeriesQueue(true);
+  if (autoScanQueue.length) showScanReview();
 }
 
-function captureForAutoScan() {
-  const cardCanvas = captureCardCanvas();
-  const thumb = cardCanvas.toDataURL("image/jpeg", 0.75);
+// Zoom als feste Stufen (Regler war zu fummelig); gewählte Stufe wird gemerkt
+function setupSeriesZoom(track) {
+  const box = $("#series-zoom");
+  box.innerHTML = "";
+  const caps = track.getCapabilities ? track.getCapabilities() : {};
+  if (!caps.zoom || caps.zoom.max <= caps.zoom.min) return;
+  const steps = SERIES_ZOOM_STEPS.filter((z) => z >= caps.zoom.min && z <= caps.zoom.max);
+  let saved = NaN;
+  try {
+    saved = parseFloat(localStorage.getItem(SCAN_ZOOM_KEY));
+  } catch (err) {
+    // kein Speicher
+  }
+  const current = steps.includes(saved) ? saved : steps[0];
+  const apply = (z) => {
+    track.applyConstraints({ advanced: [{ zoom: z }] }).catch(() => {});
+    box.querySelectorAll("button").forEach((b) => b.classList.toggle("active", parseFloat(b.dataset.zoom) === z));
+    try {
+      localStorage.setItem(SCAN_ZOOM_KEY, String(z));
+    } catch (err) {
+      // ignorieren
+    }
+  };
+  for (const z of steps) {
+    const b = document.createElement("button");
+    b.className = "series-zoom-btn";
+    b.dataset.zoom = z;
+    b.textContent = String(z).replace(".", ",") + "×";
+    b.addEventListener("click", () => apply(z));
+    box.appendChild(b);
+  }
+  apply(current);
+}
 
-  const item = {
+// Ganzes Kamerabild als JPEG (längste Seite SERIES_IMAGE_SIZE) + Vorschaubild
+function seriesCapture() {
+  const video = $("#series-video");
+  if (!seriesStream || !video.videoWidth) return;
+  const scale = Math.min(1, SERIES_IMAGE_SIZE / Math.max(video.videoWidth, video.videoHeight));
+  const c = document.createElement("canvas");
+  c.width = Math.round(video.videoWidth * scale);
+  c.height = Math.round(video.videoHeight * scale);
+  const ctx = c.getContext("2d");
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(video, 0, 0, c.width, c.height);
+  const t = document.createElement("canvas");
+  t.width = 120;
+  t.height = Math.round((120 * c.height) / c.width);
+  t.getContext("2d").drawImage(c, 0, 0, t.width, t.height);
+
+  autoScanQueue.push({
     id: "s" + Date.now() + Math.random().toString(36).slice(2, 7),
-    thumb,
+    thumb: t.toDataURL("image/jpeg", 0.7),
+    image: c.toDataURL("image/jpeg", 0.82),
     guess: "",
     matched: null,
     alternatives: [],
     confidence: "none",
     quantity: 1,
-    status: "ocr",
-  };
-  autoScanQueue.push(item);
-  renderScanQueue();
-
-  ocrChain = ocrChain.then(() => processAutoScanItem(item, cardCanvas)).catch(() => {});
+    status: "pending",
+    error: "",
+    attempts: 0,
+  });
+  // kurzes Aufblitzen + Vibration als Bestätigung
+  const flash = $("#series-flash");
+  flash.classList.remove("on");
+  void flash.offsetWidth;
+  flash.classList.add("on");
+  if (navigator.vibrate) navigator.vibrate(30);
+  refreshScanViews();
+  pumpSeriesQueue(false);
 }
 
-async function processAutoScanItem(item, cardCanvas) {
-  try {
-    const result = await recognizeCard(cardCanvas);
-    item.guess = result.rawName;
-    item.alternatives = result.cards;
-    item.confidence = result.confidence;
-    const match = result.confidence !== "none" ? result.cards[0] : null;
+// Schickt volle Bündel ab - mit flush=true auch angefangene (bei "Fertig")
+function pumpSeriesQueue(flush) {
+  while (seriesInFlight < SERIES_MAX_IN_FLIGHT) {
+    const pending = autoScanQueue.filter((q) => q.status === "pending");
+    if (pending.length === 0 || (!flush && pending.length < SERIES_BATCH)) break;
+    sendSeriesBatch(pending.slice(0, SERIES_BATCH));
+  }
+  updateSeriesStatus();
+}
 
-    if (match && result.confidence === "sure") {
-      // Dieselbe Karte in diesem Lauf schon sicher erkannt? Dann nur Anzahl erhöhen.
-      const existing = autoScanQueue.find(
-        (q) => q.id !== item.id && q.confidence === "sure" && q.matched && q.matched.id === match.id
-      );
-      if (existing) {
-        existing.quantity++;
-        autoScanQueue = autoScanQueue.filter((q) => q.id !== item.id);
-        refreshScanViews();
-        return;
+async function sendSeriesBatch(items) {
+  items.forEach((q) => (q.status = "sending"));
+  seriesInFlight++;
+  refreshScanViews();
+  let result = null;
+  let errorText = "";
+  let retryable = false;
+  try {
+    const { data, error } = await supabaseClient.functions.invoke("scan-card", {
+      body: { images: items.map((q) => q.image) },
+    });
+    if (error) {
+      let detail = null;
+      try {
+        detail = error.context && (await error.context.json());
+      } catch (e) {
+        // keine Details
+      }
+      errorText = (detail && detail.error) || error.message || "Fehler";
+      retryable = !detail || [429, 500, 502, 503, 504].includes(detail.status) || /überlastet|Limit/.test(errorText);
+    } else {
+      result = data;
+    }
+  } catch (err) {
+    errorText = "Keine Verbindung";
+    retryable = true;
+  }
+  seriesInFlight--;
+
+  if (result && Array.isArray(result.cards)) {
+    await ensureCardDbLoaded().catch(() => {});
+    items.forEach((q, i) => applySeriesResult(q, result.cards.find((c) => c.index === i + 1)));
+  } else {
+    for (const q of items) {
+      q.attempts++;
+      if (retryable && q.attempts <= SERIES_RETRY_DELAYS.length) {
+        q.status = "waiting";
+        q.error = errorText;
+        setTimeout(() => {
+          if (q.status === "waiting") q.status = "pending";
+          pumpSeriesQueue(true);
+        }, SERIES_RETRY_DELAYS[q.attempts - 1]);
+      } else {
+        q.status = "error";
+        q.error = errorText;
       }
     }
-    item.matched = match;
-    item.status = !match ? "nomatch" : result.confidence === "sure" ? "matched" : "unsure";
-  } catch (err) {
-    item.status = "error";
   }
   refreshScanViews();
+  pumpSeriesQueue(!seriesStream); // nach "Fertig" auch angefangene Bündel abschicken
+}
+
+// Gemini-Ergebnis eines Fotos -> Karte aus der Datenbank
+function applySeriesResult(item, r) {
+  item.image = null; // Speicher freigeben
+  if (!r) {
+    item.status = "error";
+    item.error = "Keine Antwort für dieses Foto";
+    return;
+  }
+  if (!r.cardFound) {
+    item.status = "nocard";
+    return;
+  }
+  item.guess = r.name || "";
+  if (!cardIndex) {
+    item.status = "nomatch";
+    return;
+  }
+  const ranking = ScanEngine.rankCandidates(cardIndex, {
+    nameTexts: r.name ? [r.name] : [],
+    codeTexts: [`${r.setCode || ""} ${r.passcode || ""}`],
+  });
+  item.confidence = ranking.confidence;
+  item.alternatives = ranking.candidates.slice(0, 6).map((c) => buildMergedCardById(c.id)).filter(Boolean);
+  const match = ranking.confidence !== "none" ? item.alternatives[0] : null;
+
+  if (match && ranking.confidence === "sure") {
+    // Dieselbe Karte in diesem Lauf schon sicher erkannt? Dann nur Anzahl erhöhen.
+    const existing = autoScanQueue.find(
+      (q) => q.id !== item.id && q.confidence === "sure" && q.matched && q.matched.id === match.id
+    );
+    if (existing) {
+      existing.quantity += item.quantity;
+      autoScanQueue = autoScanQueue.filter((q) => q.id !== item.id);
+      return;
+    }
+  }
+  item.matched = match;
+  item.status = !match ? "nomatch" : ranking.confidence === "sure" ? "matched" : "unsure";
+}
+
+function updateSeriesStatus() {
+  const total = autoScanQueue.reduce((s, q) => s + q.quantity, 0);
+  const open = autoScanQueue.filter((q) => ["pending", "sending", "waiting"].includes(q.status));
+  const waiting = autoScanQueue.find((q) => q.status === "waiting");
+  $("#series-count").textContent = `${total} ${total === 1 ? "Karte" : "Karten"}`;
+  $("#auto-scan-count").textContent = autoScanQueue.length;
+  let text = "Karte einlegen und „Aufnehmen“ drücken.";
+  if (waiting) text = `${waiting.error} – neuer Versuch gleich …`;
+  else if (open.some((q) => q.status === "sending")) text = `KI wertet ${open.length} Foto(s) aus …`;
+  else if (open.length) text = `${open.length} Foto(s) warten – werden ab ${SERIES_BATCH} Stück oder bei „Fertig“ ausgewertet.`;
+  if (seriesStream) $("#series-status").textContent = text;
+  const reviewStatus = $("#scan-review-progress");
+  if (reviewStatus) reviewStatus.textContent = open.length ? `${open.length} Foto(s) werden noch ausgewertet …` : "";
+  $("#scan-review-retry-btn").classList.toggle("hidden", !autoScanQueue.some((q) => q.status === "error" && q.image));
 }
 
 // Warteschlange und - falls schon geöffnet - die Übersicht aktualisieren
 // (Erkennung kann noch laufen, wenn der Scan-Lauf bereits beendet wurde).
 function refreshScanViews() {
   renderScanQueue();
+  updateSeriesStatus();
   if (!$("#scan-review").classList.contains("hidden")) renderScanReview();
 }
 
@@ -2323,18 +2464,19 @@ function escapeHtml(s) {
   return String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
+// Vorschau-Leiste im Vollbild-Scanner (neueste Aufnahme zuerst)
 function renderScanQueue() {
   $("#auto-scan-count").textContent = autoScanQueue.length;
-  const container = $("#scan-queue");
+  const container = $("#series-strip");
   container.innerHTML = "";
-  autoScanQueue.forEach((item) => {
+  [...autoScanQueue].reverse().forEach((item) => {
     const el = document.createElement("div");
     el.className = "scan-queue-item";
     const img = item.matched ? item.matched.image : item.thumb;
     let statusHtml = "";
-    if (item.status === "ocr") statusHtml = `<div class="status-badge">⏳</div>`;
+    if (["pending", "sending", "waiting"].includes(item.status)) statusHtml = `<div class="status-badge">⏳</div>`;
     else if (item.status === "unsure") statusHtml = `<div class="status-badge status-unsure">?</div>`;
-    else if (item.status === "nomatch") statusHtml = `<div class="status-badge">❓</div>`;
+    else if (item.status === "nomatch" || item.status === "nocard") statusHtml = `<div class="status-badge">❓</div>`;
     else if (item.status === "error") statusHtml = `<div class="status-badge">⚠️</div>`;
     el.innerHTML = `
       <img src="${img}" alt="" />
@@ -2346,12 +2488,14 @@ function renderScanQueue() {
 }
 
 // ============================================================
-// REVIEW-BILDSCHIRM NACH EINEM AUTO-SCAN-LAUF
+// REVIEW-BILDSCHIRM NACH EINEM SERIEN-SCAN
 // ============================================================
 function showScanReview() {
-  $("#scan-queue").classList.add("hidden");
   $("#scan-review").classList.remove("hidden");
   renderScanReview();
+  updateSeriesStatus();
+  // verzögert: history.back() beim Schließen des Scanners stellt sonst die alte Scrollposition wieder her
+  setTimeout(() => $("#scan-review").scrollIntoView({ behavior: "smooth", block: "start" }), 350);
 }
 
 function renderScanReview() {
@@ -2366,10 +2510,13 @@ function renderScanReview() {
 
   autoScanQueue.forEach((item) => {
     const row = document.createElement("div");
-    row.className = "scan-review-row" + (item.status === "unsure" || item.status === "nomatch" ? " needs-check" : "");
+    row.className =
+      "scan-review-row" + (["unsure", "nomatch", "nocard", "error"].includes(item.status) ? " needs-check" : "");
     const nameVal = item.matched ? item.matched.name_de || item.matched.name_en : item.guess;
     let metaText;
-    if (item.status === "ocr") metaText = "Wird erkannt …";
+    if (["pending", "sending", "waiting"].includes(item.status)) metaText = "Wird von der KI ausgewertet …";
+    else if (item.status === "nocard") metaText = "Keine Karte auf dem Foto erkannt – ggf. entfernen";
+    else if (item.status === "error") metaText = "Auswertung fehlgeschlagen: " + (item.error || "Fehler");
     else if (item.matched) {
       metaText = [item.matched.type, item.matched.attribute].filter(Boolean).join(" · ");
       if (item.status === "unsure") metaText = "⚠ Nicht sicher – bitte prüfen · " + metaText;
@@ -2436,6 +2583,11 @@ function renderScanReview() {
 
 async function saveAutoScanQueue() {
   if (!currentSession) return;
+  const open = autoScanQueue.filter((q) => ["pending", "sending", "waiting"].includes(q.status)).length;
+  if (open > 0) {
+    showToast(`${open} Foto(s) werden noch ausgewertet – bitte kurz warten.`);
+    return;
+  }
   const validItems = autoScanQueue.filter((item) => item.matched);
   if (validItems.length === 0) {
     showToast("Keine zugeordneten Karten zum Speichern.");
