@@ -3,7 +3,7 @@
 // NICHT die Kartendaten (die kommen live von Supabase/YGOPRODeck und sollen
 // immer aktuell sein).
 
-const CACHE_NAME = "kartenarchiv-shell-v6";
+const CACHE_NAME = "kartenarchiv-shell-v7";
 const SHELL_FILES = [
   "./",
   "./index.html",

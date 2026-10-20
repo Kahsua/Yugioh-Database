@@ -585,7 +585,59 @@
     return { x: best.minX / width, y: best.minY / height, w: w / width, h: h / height };
   }
 
+  // ---------- Kartenvergleich für den Auto-Scan ----------
+  // Grober "Fingerabdruck" eines Bildbereichs: Mittelwerte in einem 8x12-Raster,
+  // auf Mittelwert 0 / Streuung 1 normiert. Dadurch fast unempfindlich gegen
+  // Nachfokussieren, Belichtungswechsel und Rauschen der Kamera - ein reiner
+  // Pixelvergleich hielt schon leichtes Nachfokussieren für eine neue Karte.
+  // gray: Graubild (Breite w, Höhe h), box: { x, y, w, h } in Anteilen,
+  // ox/oy: Verschiebung in Pixeln.
+  const SIG_GX = 8;
+  const SIG_GY = 12;
+
+  function cardSignature(gray, w, h, box, ox = 0, oy = 0) {
+    const v = new Float32Array(SIG_GX * SIG_GY);
+    for (let j = 0; j < SIG_GY; j++) {
+      const y0 = Math.max(0, Math.floor((box.y + (box.h * j) / SIG_GY) * h) + oy);
+      const y1 = Math.min(h, Math.floor((box.y + (box.h * (j + 1)) / SIG_GY) * h) + oy);
+      for (let i = 0; i < SIG_GX; i++) {
+        const x0 = Math.max(0, Math.floor((box.x + (box.w * i) / SIG_GX) * w) + ox);
+        const x1 = Math.min(w, Math.floor((box.x + (box.w * (i + 1)) / SIG_GX) * w) + ox);
+        let s = 0, n = 0;
+        for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++, n++) s += gray[y * w + x];
+        v[j * SIG_GX + i] = n ? s / n : 0;
+      }
+    }
+    let mean = 0;
+    for (const x of v) mean += x;
+    mean /= v.length;
+    let sd = 0;
+    for (const x of v) sd += (x - mean) * (x - mean);
+    sd = Math.sqrt(sd / v.length) || 1;
+    for (let k = 0; k < v.length; k++) v[k] = (v[k] - mean) / sd;
+    return v;
+  }
+
+  // Abstand eines Bildbereichs zu einem gespeicherten Fingerabdruck; kleines
+  // Verwackeln (bis maxShift Pixel) wird ausgeglichen. Gemessen mit echten
+  // Fotos: dieselbe Karte (unscharf/heller/verwackelt/2 % Zoom) <= ~0.18,
+  // eine andere Karte >= ~0.48.
+  function signatureDistance(signature, gray, w, h, box, maxShift = 3) {
+    let best = Infinity;
+    for (let oy = -maxShift; oy <= maxShift; oy++) {
+      for (let ox = -maxShift; ox <= maxShift; ox++) {
+        const other = cardSignature(gray, w, h, box, ox, oy);
+        let d = 0;
+        for (let k = 0; k < other.length; k++) d += Math.abs(signature[k] - other[k]);
+        best = Math.min(best, d / other.length);
+      }
+    }
+    return best;
+  }
+
   const api = {
+    cardSignature,
+    signatureDistance,
     locateCard,
     locateTextBand,
     normalizeName,
