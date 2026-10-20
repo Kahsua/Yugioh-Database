@@ -17,7 +17,7 @@
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;600;700&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css?v=9" />
+<link rel="stylesheet" href="style.css?v=10" />
 </head>
 <body>
 
@@ -149,23 +149,30 @@
       </div>
 
       <p class="scan-intro" id="scan-intro-single">
-        Karte ins Bild halten oder legen (guter Lichteinfall, Name gut lesbar), Foto aufnehmen –
-        die Karte wird im Bild automatisch gefunden und erkannt. Am besten vor hellem Hintergrund;
-        der gestrichelte Rahmen dient nur zur Orientierung. Ist die Karte klein im Bild, hilft der Zoom.
+        Kamera starten, Karte in den gestrichelten Rahmen halten oder legen (guter Lichteinfall,
+        Name gut lesbar), Foto aufnehmen. Den Rahmen kannst du verschieben und an der Ecke
+        in der Größe ändern – die App merkt sich die Position.
       </p>
       <p class="scan-intro hidden" id="scan-intro-auto">
-        Handy fest positionieren (z.B. Scan-Halterung) – die Karte muss nicht im Rahmen liegen,
-        sie wird im Bild automatisch gefunden. Auto-Scan starten, dann Karten nacheinander
-        hineinlegen. Sobald eine Karte kurz ruhig liegt, wird sie automatisch erfasst.
+        Handy fest positionieren (z.B. Scan-Halterung), Auto-Scan starten und den Rahmen einmal
+        genau auf die Karte schieben/ziehen (wird gemerkt). Dann Karten nacheinander einlegen –
+        sobald eine neue Karte kurz ruhig liegt, wird sie erfasst. Mit ✕ beenden und alles prüfen.
       </p>
 
+      <!-- Scanner-Bühne: im Normalzustand Teil der Seite, während die Kamera läuft Vollbild -->
+      <div class="scan-stage" id="scan-stage">
+      <div class="scan-stage-bar">
+        <span class="scan-stage-title" id="scan-stage-title">Scanner</span>
+        <button class="scan-close-btn" id="scan-close-btn" aria-label="Scanner schließen">✕</button>
+      </div>
+      <div class="scan-camera-area" id="scan-camera-area">
       <div class="scan-camera-wrap" id="scan-camera-wrap">
         <video id="scan-video" class="hidden" autoplay playsinline muted></video>
         <img id="scan-captured-img" class="hidden" alt="Aufgenommenes Foto" />
         <div class="scan-placeholder" id="scan-placeholder">📷</div>
-        <div class="scan-card-guide hidden" id="scan-card-guide"></div>
-        <div class="scan-detect-box hidden" id="scan-detect-box"></div>
+        <div class="scan-card-guide hidden" id="scan-card-guide"><div class="scan-guide-handle" id="scan-guide-handle"></div></div>
         <div class="scan-motion-badge hidden" id="scan-motion-badge">Neue Karte – kurz ruhig halten …</div>
+      </div>
       </div>
       <label class="scan-zoom hidden" id="scan-zoom-wrap">
         <span>Zoom</span>
@@ -190,6 +197,10 @@
 
       <p class="scan-status" id="scan-status"></p>
 
+      <!-- Live-Warteschlange während eines Auto-Scan-Laufs -->
+      <div class="scan-queue hidden" id="scan-queue"></div>
+      </div>
+
       <div class="scan-debug hidden" id="scan-debug">
         <span class="scan-debug-label">Diagnose - das sieht die Texterkennung tatsächlich:</span>
         <img id="scan-debug-img" alt="Diagnose-Ausschnitt" />
@@ -202,8 +213,6 @@
         <button id="scan-search-btn" class="btn btn-primary">Suchen</button>
       </div>
 
-      <!-- Live-Warteschlange während eines Auto-Scan-Laufs -->
-      <div class="scan-queue hidden" id="scan-queue"></div>
     </div>
 
     <div id="scan-search-status" class="search-status"></div>
@@ -420,6 +429,6 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script src="config.js"></script>
 <script src="scan-engine.js?v=3"></script>
-<script src="app.js?v=20"></script>
+<script src="app.js?v=22"></script>
 </body>
 </html>
