@@ -586,56 +586,9 @@ input:focus, select:focus {
   border-radius: 4px;
 }
 .scan-card-guide::after {
-  content: "Rahmen verschieben · Ecke ziehen = Größe";
-  position: absolute; top: -1.5rem; left: 50%; transform: translateX(-50%);
+  content: "Karte wird automatisch gefunden";
+  position: absolute; bottom: -1.6rem; left: 50%; transform: translateX(-50%);
   font-size: 0.68rem; color: var(--gold-soft); white-space: nowrap; font-family: var(--font-mono);
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
-}
-/* Eigene Position (vom Nutzer verschoben) statt zentriert */
-.scan-card-guide.positioned { transform: none; }
-.scan-guide-handle {
-  position: absolute; right: -4px; bottom: -4px;
-  width: 28px; height: 28px; border-radius: 50%;
-  background: var(--gold); border: 2px solid #1a1406;
-  display: none;
-}
-
-/* ===== Scanner als Vollbild, solange die Kamera läuft ===== */
-.scan-stage-bar { display: none; }
-body.scan-open { overflow: hidden; }
-.scan-stage.fullscreen {
-  position: fixed; inset: 0; z-index: 900;
-  background: #05060b;
-  display: flex; flex-direction: column;
-  padding: max(0.5rem, env(safe-area-inset-top)) 0.75rem max(0.6rem, env(safe-area-inset-bottom));
-  gap: 0.45rem;
-}
-.scan-stage.fullscreen .scan-stage-bar {
-  display: flex; align-items: center; justify-content: space-between; flex: none;
-}
-.scan-stage-title { font-family: var(--font-display); color: var(--gold-soft); font-size: 1rem; }
-.scan-close-btn {
-  width: 42px; height: 42px; border-radius: 50%;
-  background: rgba(255, 255, 255, 0.08); border: 1px solid var(--panel-border);
-  color: var(--text); font-size: 1.2rem; cursor: pointer;
-}
-.scan-stage.fullscreen .scan-camera-area {
-  flex: 1 1 auto; min-height: 0;
-  display: flex; align-items: center; justify-content: center;
-}
-/* Größe setzt app.js passend zum Seitenverhältnis des Videos */
-.scan-stage.fullscreen .scan-camera-wrap { aspect-ratio: auto; flex: none; border-radius: 8px; }
-.scan-stage.fullscreen .scan-card-guide { pointer-events: auto; touch-action: none; cursor: move; }
-.scan-stage.fullscreen .scan-guide-handle { display: block; touch-action: none; cursor: nwse-resize; }
-.scan-stage.fullscreen .scan-zoom,
-.scan-stage.fullscreen .scan-actions,
-.scan-stage.fullscreen .scan-status { margin-top: 0; flex: none; }
-.scan-stage.fullscreen .scan-actions .btn,
-.scan-stage.fullscreen .scan-actions .btn-ghost { flex: 1; }
-.scan-stage.fullscreen .scan-queue {
-  flex: none; margin-top: 0; max-height: none;
-  grid-auto-flow: column; grid-auto-columns: 46px; grid-template-columns: none;
-  overflow-x: auto; overflow-y: hidden;
 }
 .scan-zoom { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.7rem; font-size: 0.8rem; color: var(--text-muted); }
 .scan-zoom input[type="range"] { flex: 1; accent-color: var(--gold); }

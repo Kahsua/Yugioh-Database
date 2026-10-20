@@ -16,7 +16,7 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
 
 ## Regeln
 1. **Cache-Busting:** Bei JEDER Änderung an `app.js`/`scan-engine.js`/`style.css` die `?v=` in `index.html` hochzählen
-   (aktuell app.js v22, scan-engine.js v3, style.css v10) und bei Shell-Änderungen `CACHE_NAME` in `service-worker.js` erhöhen.
+   (aktuell app.js v23, scan-engine.js v4, style.css v11 – Nummern nie wiederverwenden, auch nicht nach einem Revert) und bei Shell-Änderungen `CACHE_NAME` in `service-worker.js` erhöhen.
 2. Supabase-Client heißt `supabaseClient` (nie `supabase` – Namenskonflikt mit dem CDN-Global).
 3. Nie den `service_role`-Key ins Frontend. Sicherheit läuft über RLS.
 4. Listen >1000 Zeilen nur über `fetchAllRows` (`.range()`) mit `.order("created_at").order("id")`.
@@ -31,19 +31,9 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
   3 Tage gecacht (`fetchFullYgoDatabase`).
 
 ## Kartenscan
-- Scanner läuft als Vollbild (`openScannerStage`/`closeScannerStage`, #scan-stage wird dafür unter <body>
-  gehängt; ✕ und Android-Zurück schließen; Auto-Scan -> Übersicht). Vorschau exakt im Video-Seitenverhältnis.
-- Der RAHMEN bestimmt die Karte: verschiebbar/vergrößerbar, pro Gerät in localStorage gemerkt
-  (`kartenarchiv-scan-frame`). Freie Kartensuche im ganzen Bild wurde verworfen (Schatten der
-  Halterungswände wurden für Karte gehalten). `cropFromGuide` schärft die Kante nur in einem 4 %-Rand nach.
-  Alex nutzt eine feste Scan-Halterung (Karte unten mittig, Zoom ~1.1).
-- Auto-Scan (`checkMotionTick`) beobachtet nur den Rahmen: leer (Kontrast < `EMPTY_CONTRAST`) -> nichts;
-  vergleicht grobe Fingerabdrücke (`ScanEngine.cardSignature`/`signatureDistance`, 8x12, normiert,
-  Verschiebung ausgeglichen) - NICHT Pixel (Nachfokussieren löste sonst 130 Scans für 1 Karte aus).
-  Auslösen, wenn ~1,2 s ruhig UND anders als die letzte Erfassung; max. 1 / 1,5 s; schärfstes von 6 Bildern.
-  Gleiche Karte direkt hintereinander zählt nicht doppelt ("+1"-Knopf für echte Kopie). Nicht erkannt ->
-  genau ein 2. Versuch, der den ersten ersetzt. Test: `test-scans/_referenz/autoscan-sim.js`
-  (simulierte unruhige Kamera inkl. leerer Halterung). Diagnose am Gerät: `window.__autoScanDebug`.
+- Karte wird im Kamerabild automatisch gefunden (`detectCardBox` -> `ScanEngine.locateCard`, braucht hellen
+  Hintergrund), der Rahmen ist nur Fallback. Alex nutzt eine feste Scan-Halterung (Karte unten mittig,
+  Zoom ~1.3, Zoom-Regler in der App). Auto-Scan beobachtet das ganze Bild auf Bewegung.
 - Ablauf in `recognizeCard` (app.js): Namenszeile automatisch suchen (`locateNameRect`), OCR, dann
   Passcode-Zeile (`preparePasscodeCanvas`), dann Ausweich-Ausschnitte; Abbruch sobald "sure". Set-Code
   ist auf echten Fotos nicht lesbar -> kein eigener Schritt. Manche deutschen Namen fehlen bei YGOPRODeck
@@ -62,7 +52,18 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
 - Kartenscan: mehr echte Fotos nach `test-scans/` (Dateiname = Kartenname, ID in photos.js eintragen),
   v.a. Monster mit Stufen, Xyz/Link/Pendel, Foil-Namen, englische Karten; Passcode-Lesung (~3/7)
   verbessern; ggf. danach Artwork-Erkennung per Bild-Fingerabdruck
-- Auto-Scan-Feinjustierung nach Tests mit Kamera-Halterung
+- **Geplant: KI-Erkennung per Google Gemini (Flash, Gratis-Tarif)** – Foto vom ganzen Bild (ohne Rahmen)
+  an eine Supabase Edge Function (hält den Gemini-Key als Secret, Key nie ins Frontend), Gemini liefert
+  Name/Set-Code/"keine Karte", App gleicht mit der Kartendatenbank ab. Alex wünscht: Auto-Scan nur per
+  Start-Knopf, Zoom per festen Knöpfen statt Regler, generell aufgeräumtere Scanner-UI (Vollbild mit ✕).
+  Claude-API ist kostenpflichtig -> nicht verwenden.
+
+## Lehren aus den Scanner-Versuchen (Okt. 2026)
+- Stand v17 (`c61c234`) war für Alex am besten; drei weitere Versionen (Pixel-/Fingerabdruck-Vergleich
+  für den Auto-Scan, Vollbild + verschiebbarer Rahmen) wurden zurückgenommen (Revert): mit echter Kamera
+  Dauer-Erfassungen auch ohne Karte, Rahmen-Einstellen umständlich, Zoom-Regler fummelig.
+- Heuristiken nur mit simulierter Kamera zu testen war die Ursache – Änderungen am Auto-Scan nur noch mit
+  echten Kamera-Daten von Alex (Screenshots, Messwerte vom Handy) oder per KI lösen.
 
 ## Betrieb / Backup
 - `.github/workflows/keepalive.yml` pingt Supabase alle 3 Tage (gegen Pause nach 7 Tagen Inaktivität).

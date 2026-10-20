@@ -253,7 +253,6 @@ $all(".tab").forEach((tab) => {
     if (view !== "scan") {
       stopScanCamera();
       stopAutoScan();
-      closeScannerStage();
     }
     $all(".view").forEach((v) => v.classList.remove("active"));
     $("#view-" + view).classList.add("active");
@@ -1651,15 +1650,6 @@ async function startScanCamera() {
   setupScanZoom(scanStream.getVideoTracks()[0]);
 
   const video = $("#scan-video");
-  // Vorschau im Seitenverhältnis des Videos zeigen, damit nichts abgeschnitten
-  // wird - man sieht genau das, was die Kamera aufnimmt (Handy-Video ist
-  // meist 9:16, also schmaler als der 3:4-Platzhalter). Höhe auf ~70 % des
-  // Bildschirms begrenzen.
-  openScannerStage(scanMode === "auto" ? "Auto-Scan" : "Einzelbild");
-  video.onloadedmetadata = () => {
-    layoutScanner();
-    applyGuidePosition();
-  };
   video.srcObject = scanStream;
   video.classList.remove("hidden");
   $("#scan-placeholder").classList.add("hidden");
@@ -1798,199 +1788,19 @@ function detectCardBox(source, srcW = source.width, srcH = source.height) {
   return ScanEngine.locateCard(ctx.getImageData(0, 0, w, h).data, w, h);
 }
 
-// Karte aus dem Rahmen ausschneiden. Der Rahmen ist maßgeblich (in einer
-// Halterung liegt die Karte immer an derselben Stelle; eine freie Suche im
-// ganzen Bild ließ sich von Schatten der Halterungswände täuschen). Nur
-// innerhalb eines etwas größeren Bereichs um den Rahmen wird die Kartenkante
-// nachgeschärft - und auch das nur, wenn das Ergebnis plausibel ist.
-function cropFromGuide(source, srcW, srcH, f) {
-  const m = 0.04;
-  const fx = Math.max(0, f.fx - f.fw * m);
-  const fy = Math.max(0, f.fy - f.fh * m);
-  const fw = Math.min(1 - fx, f.fw * (1 + 2 * m));
-  const fh = Math.min(1 - fy, f.fh * (1 + 2 * m));
-  const region = cropToCanvas(source, srcW, srcH, { fx, fy, fw, fh });
-  const box = detectCardBox(region);
-  const area = box ? box.w * box.h : 0;
-  if (box && area > 0.7 && area <= 1) {
-    return cropToCanvas(region, region.width, region.height, { fx: box.x, fy: box.y, fw: box.w, fh: box.h });
-  }
-  return cropToCanvas(source, srcW, srcH, f);
+// Karte aus einem Bild ausschneiden: automatisch gefunden, sonst der
+// Ausrichtrahmen (fallbackFractions) - oder null, wenn beides fehlt.
+function cropCard(source, srcW, srcH, fallbackFractions) {
+  const box = detectCardBox(source, srcW, srcH);
+  const f = box ? { fx: box.x, fy: box.y, fw: box.w, fh: box.h } : fallbackFractions;
+  return f ? cropToCanvas(source, srcW, srcH, f) : null;
 }
 
 // Standbild aus dem laufenden Video (schnell, für Auto-Scan und als Fallback)
 function captureCardCanvas() {
   const video = $("#scan-video");
-  return cropFromGuide(video, video.videoWidth, video.videoHeight, getGuideFractions(video));
+  return cropCard(video, video.videoWidth, video.videoHeight, getGuideFractions(video));
 }
-
-// ============================================================
-// SCANNER-VOLLBILD + VERSCHIEBBARER RAHMEN
-// ============================================================
-// Solange die Kamera läuft, füllt der Scanner den ganzen Bildschirm (kein
-// Scrollen, mehr Platz fürs Bild). Schließen per ✕ oder Android-Zurück-Taste.
-let scannerHistoryPushed = false;
-let scanStagePlaceholder = null;
-
-function openScannerStage(title) {
-  const stage = $("#scan-stage");
-  $("#scan-stage-title").textContent = title;
-  // Direkt unter <body> hängen: innerhalb der (animierten) Ansicht würde
-  // position:fixed nur deren Bereich füllen statt den ganzen Bildschirm
-  if (!scanStagePlaceholder) {
-    scanStagePlaceholder = document.createComment("scan-stage");
-    stage.parentNode.insertBefore(scanStagePlaceholder, stage);
-    document.body.appendChild(stage);
-  }
-  stage.classList.add("fullscreen");
-  document.body.classList.add("scan-open");
-  if (!scannerHistoryPushed) {
-    scannerHistoryPushed = true;
-    history.pushState({ ygoScanner: true }, "");
-  }
-  layoutScanner();
-}
-
-function closeScannerStage() {
-  const stage = $("#scan-stage");
-  if (scanStagePlaceholder) {
-    scanStagePlaceholder.parentNode.insertBefore(stage, scanStagePlaceholder);
-    scanStagePlaceholder.remove();
-    scanStagePlaceholder = null;
-  }
-  stage.classList.remove("fullscreen");
-  document.body.classList.remove("scan-open");
-  $("#scan-camera-wrap").removeAttribute("style");
-  if (scannerHistoryPushed) {
-    scannerHistoryPushed = false;
-    history.back();
-  }
-}
-
-// ✕ / Zurück: Auto-Scan beenden -> Übersicht; Einzelbild -> abbrechen
-function onScannerCloseRequested() {
-  if (motionInterval) stopAutoScanAndReview();
-  else resetScan();
-}
-
-$("#scan-close-btn").addEventListener("click", onScannerCloseRequested);
-window.addEventListener("popstate", () => {
-  if (scannerHistoryPushed) {
-    scannerHistoryPushed = false; // Eintrag ist durch Zurück schon weg
-    onScannerCloseRequested();
-  }
-});
-window.addEventListener("resize", () => {
-  layoutScanner();
-  applyGuidePosition();
-});
-
-// Kamerabild im Vollbild so groß wie möglich, im Seitenverhältnis des Videos
-// (dann ist die Vorschau exakt das Kamerabild, nichts abgeschnitten).
-function layoutScanner() {
-  const video = $("#scan-video");
-  const wrap = $("#scan-camera-wrap");
-  if (!$("#scan-stage").classList.contains("fullscreen") || !video.videoWidth) return;
-  const area = $("#scan-camera-area").getBoundingClientRect();
-  const aspect = video.videoWidth / video.videoHeight;
-  const w = Math.min(area.width, area.height * aspect);
-  wrap.style.width = Math.floor(w) + "px";
-  wrap.style.height = Math.floor(w / aspect) + "px";
-}
-
-// Rahmenposition wird pro Gerät gemerkt (Anteile des Kamerabilds), damit
-// sie in der Halterung nur einmal eingestellt werden muss.
-const SCAN_FRAME_KEY = "kartenarchiv-scan-frame";
-
-function loadGuideFrame() {
-  try {
-    const f = JSON.parse(localStorage.getItem(SCAN_FRAME_KEY) || "null");
-    if (f && f.fx >= 0 && f.fy >= 0 && f.fw > 0.1 && f.fw <= 1) return f;
-  } catch (err) {
-    // kein Speicher - Standardrahmen
-  }
-  return null;
-}
-
-function applyGuidePosition() {
-  const guide = $("#scan-card-guide");
-  const wrap = $("#scan-camera-wrap");
-  const f = loadGuideFrame();
-  if (!f || !wrap.clientWidth) {
-    guide.classList.remove("positioned");
-    guide.style.left = guide.style.top = guide.style.width = "";
-    return;
-  }
-  guide.classList.add("positioned");
-  guide.style.left = f.fx * wrap.clientWidth + "px";
-  guide.style.top = f.fy * wrap.clientHeight + "px";
-  guide.style.width = f.fw * wrap.clientWidth + "px";
-}
-
-function saveGuidePosition() {
-  const guide = $("#scan-card-guide");
-  const wrap = $("#scan-camera-wrap");
-  const f = {
-    fx: guide.offsetLeft / wrap.clientWidth,
-    fy: guide.offsetTop / wrap.clientHeight,
-    fw: guide.offsetWidth / wrap.clientWidth,
-  };
-  try {
-    localStorage.setItem(SCAN_FRAME_KEY, JSON.stringify(f));
-  } catch (err) {
-    // ignorieren - gilt dann nur für diese Sitzung
-  }
-  lastCapture = null; // neuer Bereich -> Vergleich neu beginnen
-}
-
-// Verschieben (Rahmen ziehen) und Größe ändern (Eck-Griff ziehen)
-(function setupGuideDragging() {
-  const guide = $("#scan-card-guide");
-  const handle = $("#scan-guide-handle");
-  let drag = null;
-
-  const start = (e, mode) => {
-    if (!$("#scan-stage").classList.contains("fullscreen")) return;
-    e.preventDefault();
-    e.stopPropagation();
-    const wrapRect = $("#scan-camera-wrap").getBoundingClientRect();
-    const r = guide.getBoundingClientRect();
-    guide.classList.add("positioned");
-    guide.style.left = r.left - wrapRect.left + "px";
-    guide.style.top = r.top - wrapRect.top + "px";
-    guide.style.width = r.width + "px";
-    drag = { mode, x: e.clientX, y: e.clientY, left: r.left - wrapRect.left, top: r.top - wrapRect.top, width: r.width, wrapRect };
-    (mode === "resize" ? handle : guide).setPointerCapture(e.pointerId);
-  };
-  const move = (e) => {
-    if (!drag) return;
-    const { wrapRect } = drag;
-    const ratio = 86 / 59;
-    if (drag.mode === "move") {
-      const height = drag.width * ratio;
-      const left = Math.min(Math.max(0, drag.left + e.clientX - drag.x), wrapRect.width - drag.width);
-      const top = Math.min(Math.max(0, drag.top + e.clientY - drag.y), wrapRect.height - height);
-      guide.style.left = left + "px";
-      guide.style.top = top + "px";
-    } else {
-      const maxW = Math.min(wrapRect.width - drag.left, (wrapRect.height - drag.top) / ratio);
-      const width = Math.min(maxW, Math.max(wrapRect.width * 0.2, drag.width + e.clientX - drag.x));
-      guide.style.width = width + "px";
-    }
-  };
-  const end = () => {
-    if (!drag) return;
-    drag = null;
-    saveGuidePosition();
-  };
-  guide.addEventListener("pointerdown", (e) => start(e, "move"));
-  handle.addEventListener("pointerdown", (e) => start(e, "resize"));
-  for (const el of [guide, handle]) {
-    el.addEventListener("pointermove", move);
-    el.addEventListener("pointerup", end);
-    el.addEventListener("pointercancel", end);
-  }
-})();
 
 // Einzelbild: wenn möglich ein echtes Foto in voller Sensorauflösung
 // (Chrome/Android: ImageCapture.takePhoto). Die Karte wird darin selbst
@@ -2010,7 +1820,7 @@ async function takeHiResCardPhoto(fractions) {
     const photoAspect = bitmap.width / bitmap.height;
     const sameView = Math.abs(photoAspect - videoAspect) / videoAspect < 0.03;
     const canvas =
-      sameView && bitmap.width > video.videoWidth ? cropFromGuide(bitmap, bitmap.width, bitmap.height, fractions) : null;
+      bitmap.width > video.videoWidth ? cropCard(bitmap, bitmap.width, bitmap.height, sameView ? fractions : null) : null;
     bitmap.close();
     return canvas;
   } catch (err) {
@@ -2213,7 +2023,6 @@ async function captureAndRecognize() {
   $("#scan-video").classList.add("hidden");
   $("#scan-card-guide").classList.add("hidden");
   stopScanCamera();
-  closeScannerStage(); // Ergebnis wird auf der normalen Seite angezeigt
 
   $("#scan-capture-btn").classList.add("hidden");
   $("#scan-capture-btn").disabled = false;
@@ -2263,7 +2072,6 @@ async function captureAndRecognize() {
 
 function resetScan() {
   stopScanCamera();
-  closeScannerStage();
   $("#scan-video").classList.add("hidden");
   $("#scan-captured-img").classList.add("hidden");
   $("#scan-card-guide").classList.add("hidden");
@@ -2281,56 +2089,30 @@ function resetScan() {
   $("#scan-queue").classList.add("hidden");
   $("#scan-queue").innerHTML = "";
   $("#scan-review").classList.add("hidden");
-  $("#scan-camera-wrap").removeAttribute("style");
   $("#auto-scan-start-btn").classList.remove("hidden");
   $("#auto-scan-stop-btn").classList.add("hidden");
-  $("#auto-scan-plus-btn").classList.add("hidden");
 }
 
 // ============================================================
-// AUTO-SCAN (Serienerfassung: "neue Karte liegt ruhig im Bild")
+// AUTO-SCAN (Serienerfassung per Bewegungserkennung)
 // ============================================================
-// Statt auf Bewegung zu warten (ein schnell eingeworfener Kartenwechsel
-// fällt oft zwischen zwei Messungen), vergleicht der Auto-Scan das ruhige
-// Bild mit dem Bild der zuletzt erfassten Karte: Hat sich im Kartenbereich
-// genug verändert, ist es eine neue Karte. Eine Hand, die kurz ins Bild
-// greift, ohne die Karte zu wechseln, löst dadurch keine zweite Erfassung aus.
 let autoScanQueue = []; // {id, thumb, guess, matched, alternatives, confidence, quantity, status}
 let motionInterval = null;
-const motionCanvas = document.createElement("canvas");
-let lastFrameGray = null; // Graubild der letzten Messung
-let lastCapture = null; // { signature, box } der zuletzt erfassten Karte
-let lastCaptureAt = 0;
-let stillTicks = 0;
-let lastScanHint = "";
-let lastRecognizedId = null; // zuletzt erkannte Karte (Reihenfolge der Erfassung)
-let retryForItemId = null; // nicht erkannte Erfassung, die beim nächsten Versuch ersetzt wird
+let motionSmallCanvas = document.createElement("canvas");
+motionSmallCanvas.width = 48;
+motionSmallCanvas.height = 48;
+let lastSmallFrameData = null;
+let stillFrameCount = 0;
+let capturedForCurrentObject = false;
 let ocrChain = Promise.resolve(); // serialisiert OCR-Aufrufe (ein Worker kann nur 1 gleichzeitig)
 
-// Vergleich über ScanEngine.cardSignature/signatureDistance (grobes Raster,
-// unempfindlich gegen Nachfokussieren, Licht, leichtes Wackeln). Messwerte
-// mit echten Fotos: gleiche Karte <= ~0.18, andere Karte >= ~0.48.
-const MOTION_WIDTH = 160; // Breite des Vergleichsbilds in Pixeln
-const STILL_DISTANCE = 0.22; // Abstand zwischen zwei Messungen darunter = Bild ruhig
-const NEW_CARD_DISTANCE = 0.35; // Abstand zur letzten Erfassung darüber = neue Karte
-const REQUIRED_STILL_TICKS = 4; // ~4 x 300 ms Ruhe nötig vor dem Auslösen
-const MIN_CAPTURE_GAP_MS = 1500; // Sicherheitsnetz: höchstens eine Erfassung pro 1,5 s
-const EMPTY_CONTRAST = 18; // Helligkeits-Streuung im Rahmen darunter = keine Karte (leere Halterung)
-const MOTION_TICK_MS = 300;
+const STILL_THRESHOLD = 6; // Grauwert-Differenz unterhalb: "ruhig"
+const MOVE_THRESHOLD = 14; // oberhalb: "in Bewegung" (Hysterese gegen Flackern)
+const REQUIRED_STILL_TICKS = 3; // ~3 x 350ms = guten 1 Sek. Ruhe nötig vor Auslösen
+const MOTION_TICK_MS = 350;
 
 $("#auto-scan-start-btn").addEventListener("click", startAutoScan);
 $("#auto-scan-stop-btn").addEventListener("click", stopAutoScanAndReview);
-// Zwei gleiche Karten direkt nacheinander sehen für die Kamera identisch aus -
-// dafür gibt es "+1": erhöht die Anzahl der zuletzt erfassten Karte.
-// (?. : falls ein Browser noch eine ältere index.html ohne den Knopf im Cache
-// hat, soll nicht das ganze Skript abbrechen)
-$("#auto-scan-plus-btn")?.addEventListener("click", () => {
-  const last = autoScanQueue[autoScanQueue.length - 1];
-  if (!last) return;
-  last.quantity++;
-  renderScanQueue();
-  showToast(`Anzahl der letzten Karte: ${last.quantity}`);
-});
 $("#scan-review-save-btn").addEventListener("click", saveAutoScanQueue);
 $("#scan-review-discard-btn").addEventListener("click", () => {
   autoScanQueue = [];
@@ -2340,13 +2122,9 @@ $("#scan-review-discard-btn").addEventListener("click", () => {
 
 async function startAutoScan() {
   autoScanQueue = [];
-  lastFrameGray = null;
-  lastCapture = null;
-  lastCaptureAt = 0;
-  stillTicks = 0;
-  lastScanHint = "";
-  lastRecognizedId = null;
-  retryForItemId = null;
+  lastSmallFrameData = null;
+  stillFrameCount = 0;
+  capturedForCurrentObject = false;
   renderScanQueue();
 
   const stream = await startScanCamera();
@@ -2354,11 +2132,9 @@ async function startAutoScan() {
 
   $("#auto-scan-start-btn").classList.add("hidden");
   $("#auto-scan-stop-btn").classList.remove("hidden");
-  $("#auto-scan-plus-btn").classList.remove("hidden");
   $("#scan-capture-btn").classList.add("hidden"); // Auto-Scan löst selbst aus
-  $("#scan-card-guide").classList.remove("hidden"); // Rahmen = Bereich, der beobachtet und gelesen wird
   $("#scan-queue").classList.remove("hidden");
-  setScanHint("Auto-Scan läuft – Karten nacheinander einlegen.");
+  $("#scan-status").textContent = "Auto-Scan läuft – Karten nacheinander in den Kamerabereich legen.";
 
   await getOcrWorker(); // Erkennung im Hintergrund vorladen
 
@@ -2372,7 +2148,6 @@ function stopAutoScan() {
   }
   stopScanCamera();
   $("#scan-motion-badge").classList.add("hidden");
-  $("#auto-scan-plus-btn").classList.add("hidden");
 }
 
 function stopAutoScanAndReview() {
@@ -2380,136 +2155,51 @@ function stopAutoScanAndReview() {
   $("#scan-video").classList.add("hidden");
   $("#scan-card-guide").classList.add("hidden");
   $("#scan-placeholder").classList.remove("hidden");
-  closeScannerStage();
   $("#auto-scan-start-btn").classList.remove("hidden");
   $("#auto-scan-stop-btn").classList.add("hidden");
   showScanReview();
-}
-
-function setScanHint(text) {
-  if (text === lastScanHint) return;
-  lastScanHint = text;
-  $("#scan-status").textContent = text;
 }
 
 function checkMotionTick() {
   const video = $("#scan-video");
   if (!video.videoWidth) return;
 
-  // Beobachtet wird nur der Rahmen (= die Stelle, an der die Karte liegt)
-  const w = MOTION_WIDTH;
-  const h = Math.round((w * video.videoHeight) / video.videoWidth);
-  motionCanvas.width = w;
-  motionCanvas.height = h;
-  const ctx = motionCanvas.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(video, 0, 0, w, h);
-  const rgba = ctx.getImageData(0, 0, w, h).data;
-  const gray = new Float32Array(w * h);
-  for (let i = 0, p = 0; p < gray.length; i += 4, p++) gray[p] = rgba[i] * 0.299 + rgba[i + 1] * 0.587 + rgba[i + 2] * 0.114;
+  // Ganzes Kamerabild beobachten: die Karte muss nicht im Rahmen liegen
+  // (Scan-Halterung), sie wird beim Erfassen automatisch gefunden.
+  const ctx = motionSmallCanvas.getContext("2d", { willReadFrequently: true });
+  ctx.drawImage(video, 0, 0, motionSmallCanvas.width, motionSmallCanvas.height);
+  const frame = ctx.getImageData(0, 0, motionSmallCanvas.width, motionSmallCanvas.height).data;
 
-  const f = getGuideFractions(video);
-  const box = { x: f.fx, y: f.fy, w: f.fw, h: f.fh };
-  const previousGray = lastFrameGray && lastFrameGray.length === gray.length ? lastFrameGray : null;
-  lastFrameGray = gray;
+  if (lastSmallFrameData) {
+    let diffSum = 0;
+    const pixelCount = frame.length / 4;
+    for (let i = 0; i < frame.length; i += 4) {
+      const gray1 = (frame[i] + frame[i + 1] + frame[i + 2]) / 3;
+      const gray2 = (lastSmallFrameData[i] + lastSmallFrameData[i + 1] + lastSmallFrameData[i + 2]) / 3;
+      diffSum += Math.abs(gray1 - gray2);
+    }
+    const avgDiff = diffSum / pixelCount;
 
-  // Leere Halterung / heller Hintergrund: kaum Kontrast im Rahmen -> nichts tun
-  const contrast = regionContrast(gray, w, h, box);
-  if (contrast < EMPTY_CONTRAST) {
-    stillTicks = 0;
-    $("#scan-motion-badge").classList.add("hidden");
-    setScanHint("Keine Karte im Rahmen – Karte einlegen (Rahmen ggf. auf die Karte schieben).");
-    return;
-  }
-  setScanHint("Auto-Scan läuft – Karten nacheinander einlegen.");
-
-  // Ruhig = der Rahmen sieht aus wie bei der letzten Messung
-  const motion = previousGray
-    ? ScanEngine.signatureDistance(ScanEngine.cardSignature(previousGray, w, h, box), gray, w, h, box, 2)
-    : Infinity;
-  stillTicks = motion < STILL_DISTANCE ? stillTicks + 1 : 0;
-
-  // Neu = deutlich anders als bei der letzten Erfassung
-  const sameRegion = lastCapture && lastCapture.width === w && ["x", "y", "w", "h"].every((k) => Math.abs(lastCapture.box[k] - box[k]) < 0.01);
-  const newness = sameRegion ? ScanEngine.signatureDistance(lastCapture.signature, gray, w, h, box, 3) : Infinity;
-  window.__autoScanDebug = { motion, stillTicks, contrast, newness }; // Diagnose in der Konsole
-  if (newness <= NEW_CARD_DISTANCE) {
-    $("#scan-motion-badge").classList.add("hidden");
-    return;
-  }
-  if (stillTicks >= REQUIRED_STILL_TICKS && Date.now() - lastCaptureAt > MIN_CAPTURE_GAP_MS) {
-    const previousCapture = lastCapture;
-    lastCapture = { signature: ScanEngine.cardSignature(gray, w, h, box), box, width: w };
-    lastCaptureAt = Date.now();
-    $("#scan-motion-badge").classList.add("hidden");
-    captureForAutoScan(lastCapture, previousCapture);
-  } else {
-    $("#scan-motion-badge").classList.remove("hidden"); // neue Karte erkannt, wartet auf Ruhe
-  }
-}
-
-// Standardabweichung der Helligkeit im Bereich (0 = einfarbig)
-function regionContrast(gray, w, h, box) {
-  const x0 = Math.max(0, Math.floor(box.x * w)), x1 = Math.min(w, Math.ceil((box.x + box.w) * w));
-  const y0 = Math.max(0, Math.floor(box.y * h)), y1 = Math.min(h, Math.ceil((box.y + box.h) * h));
-  let s = 0, s2 = 0, n = 0;
-  for (let y = y0; y < y1; y++) {
-    for (let x = x0; x < x1; x++) {
-      const v = gray[y * w + x];
-      s += v;
-      s2 += v * v;
-      n++;
+    if (avgDiff > MOVE_THRESHOLD) {
+      stillFrameCount = 0;
+      capturedForCurrentObject = false;
+      $("#scan-motion-badge").classList.add("hidden");
+    } else if (avgDiff < STILL_THRESHOLD) {
+      stillFrameCount++;
+      if (stillFrameCount >= REQUIRED_STILL_TICKS && !capturedForCurrentObject) {
+        capturedForCurrentObject = true;
+        $("#scan-motion-badge").classList.add("hidden");
+        captureForAutoScan();
+      } else if (!capturedForCurrentObject) {
+        $("#scan-motion-badge").classList.remove("hidden");
+      }
     }
   }
-  if (!n) return 0;
-  const mean = s / n;
-  return Math.sqrt(Math.max(0, s2 / n - mean * mean));
+  lastSmallFrameData = frame;
 }
 
-// capture / previousCapture: Fingerabdruck dieser Erfassung und der davor -
-// wird gebraucht, falls sich die Erfassung als "keine Karte" herausstellt
-// (z.B. eine Hand lag still im Bild), um wieder mit der vorherigen Karte zu vergleichen.
-// Schärfe eines Bildes: mittlere Helligkeitsänderung zwischen Nachbarpixeln
-// (verkleinert auf 200 px Breite) - unscharfe Bilder haben weiche Kanten.
-function imageSharpness(canvas) {
-  const w = 200;
-  const h = Math.max(1, Math.round((w * canvas.height) / canvas.width));
-  const c = document.createElement("canvas");
-  c.width = w;
-  c.height = h;
-  const ctx = c.getContext("2d", { willReadFrequently: true });
-  ctx.drawImage(canvas, 0, 0, w, h);
-  const d = ctx.getImageData(0, 0, w, h).data;
-  let sum = 0;
-  for (let y = 0; y < h - 1; y++) {
-    for (let x = 0; x < w - 1; x++) {
-      const i = (y * w + x) * 4;
-      sum += Math.abs(d[i + 1] - d[i + 5]) + Math.abs(d[i + 1] - d[i + 1 + w * 4]);
-    }
-  }
-  return sum / (w * h);
-}
-
-// Mehrere Bilder kurz hintereinander, das schärfste gewinnt - die Kamera
-// fokussiert oft gerade nach, wenn die Karte zur Ruhe kommt.
-async function captureSharpestCard(frames = 6, gapMs = 150) {
-  let best = null;
-  let bestScore = -1;
-  for (let i = 0; i < frames; i++) {
-    if (i) await new Promise((r) => setTimeout(r, gapMs));
-    if (!scanStream) break;
-    const canvas = captureCardCanvas();
-    const score = imageSharpness(canvas);
-    if (score > bestScore) {
-      bestScore = score;
-      best = canvas;
-    }
-  }
-  return best;
-}
-
-async function captureForAutoScan(capture = null, previousCapture = null) {
-  const cardCanvas = await captureSharpestCard();
-  if (!cardCanvas) return;
+function captureForAutoScan() {
+  const cardCanvas = captureCardCanvas();
   const thumb = cardCanvas.toDataURL("image/jpeg", 0.75);
 
   const item = {
@@ -2521,16 +2211,7 @@ async function captureForAutoScan(capture = null, previousCapture = null) {
     confidence: "none",
     quantity: 1,
     status: "ocr",
-    capture,
-    previousCapture,
-    isRetry: false,
   };
-  if (retryForItemId) {
-    // zweiter Versuch für eine nicht erkannte Erfassung -> ersetzt sie
-    item.isRetry = true;
-    autoScanQueue = autoScanQueue.filter((q) => q.id !== retryForItemId);
-    retryForItemId = null;
-  }
   autoScanQueue.push(item);
   renderScanQueue();
 
@@ -2545,18 +2226,8 @@ async function processAutoScanItem(item, cardCanvas) {
     item.confidence = result.confidence;
     const match = result.confidence !== "none" ? result.cards[0] : null;
 
-    if (match && match.id === lastRecognizedId) {
-      // Dieselbe Karte wie bei der Erfassung davor: fast immer dieselbe
-      // physische Karte (Hand lag kurz still darauf, Schatten ...). Eine
-      // echte zweite Kopie zählt der "+1"-Knopf - zwei gleiche Karten sehen
-      // in der Halterung ohnehin identisch aus.
-      autoScanQueue = autoScanQueue.filter((q) => q.id !== item.id);
-      refreshScanViews();
-      return;
-    }
-    if (match) lastRecognizedId = match.id;
     if (match && result.confidence === "sure") {
-      // Dieselbe Karte in diesem Lauf schon früher sicher erkannt? Dann nur Anzahl erhöhen.
+      // Dieselbe Karte in diesem Lauf schon sicher erkannt? Dann nur Anzahl erhöhen.
       const existing = autoScanQueue.find(
         (q) => q.id !== item.id && q.confidence === "sure" && q.matched && q.matched.id === match.id
       );
@@ -2572,15 +2243,6 @@ async function processAutoScanItem(item, cardCanvas) {
   } catch (err) {
     item.status = "error";
   }
-  // Keine Karte erkannt (Hand im Bild, unscharf, ...): genau EIN zweiter
-  // Versuch - Vergleich auf die vorherige Karte zurücksetzen, dann wird neu
-  // erfasst, und der zweite Versuch ersetzt diesen Eintrag. Ein zweiter
-  // Fehlschlag bleibt stehen (sonst würde eine unlesbare Karte endlos erfasst).
-  if (!item.matched && !item.isRetry && item.capture && lastCapture === item.capture) {
-    lastCapture = item.previousCapture;
-    retryForItemId = item.id;
-  }
-  item.capture = item.previousCapture = null;
   refreshScanViews();
 }
 
