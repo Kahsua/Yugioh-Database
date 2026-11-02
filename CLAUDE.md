@@ -80,7 +80,9 @@ gehostet auf GitHub Pages (`kahsua.github.io/Yugioh-Database/`), PWA (Android-Ch
   echten Kamera-Daten von Alex (Screenshots, Messwerte vom Handy) oder per KI lösen.
 
 ## Betrieb / Backup
-- `.github/workflows/keepalive.yml` pingt Supabase alle 3 Tage (gegen Pause nach 7 Tagen Inaktivität).
+- `.github/workflows/keepalive.yml` fragt alle 6 Stunden profiles/cards/history ab (gegen Pause bei zu wenig
+  DB-Aktivität). Ein Ping alle 3 Tage reichte NICHT – Projekt wurde am 2.11.2026 trotzdem pausiert
+  (Backup-Lauf: `getaddrinfo ENOTFOUND` = Projekt pausiert). Status prüfen: `npx.cmd supabase projects list`.
 - `.github/workflows/backup.yml` exportiert montags profiles/cards/history (JSON+CSV), verschlüsselt sie
   (`scripts/backup-crypt.mjs`, Secret `BACKUP_PASSWORD`) und legt sie als Workflow-Download ab (90 Tage).
   Ins Repo kommt NUR `backup/last-backup.json` – hält das Repo aktiv (GitHub deaktiviert Cron-Workflows

@@ -1,17 +1,30 @@
-# Verhindert, dass Supabase (Free) das Projekt nach 7 Tagen Inaktivität pausiert.
+# Verhindert, dass Supabase (Free) das Projekt wegen Inaktivität pausiert.
+# Supabase pausiert Free-Projekte bei "zu wenig Datenbank-Aktivität" innerhalb
+# einer Woche; laut FAQ reichen "ein paar Anfragen pro Tag" meist aus. Ein Ping
+# alle 3 Tage reichte nicht (Projekt wurde am 2.11.2026 trotzdem pausiert) -
+# daher jetzt alle 6 Stunden mehrere echte Abfragen auf alle Tabellen.
 # Einrichtung: GitHub-Repo -> Settings -> Secrets and variables -> Actions ->
 # Secrets "SUPABASE_URL" und "SUPABASE_ANON_KEY" anlegen (gleiche Werte wie config.js).
+# Schlägt der Lauf fehl (z.B. Projekt pausiert -> Adresse nicht auflösbar),
+# schickt GitHub eine E-Mail.
 name: Supabase Keepalive
 on:
   schedule:
-    - cron: "17 6 */3 * *"   # alle 3 Tage
+    - cron: "17 */6 * * *" # alle 6 Stunden
   workflow_dispatch: {}
 jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Datenbank anpingen
+      - name: Datenbank abfragen
+        env:
+          URL: ${{ secrets.SUPABASE_URL }}
+          KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          curl -fsS "${{ secrets.SUPABASE_URL }}/rest/v1/profiles?select=id&limit=1" \
-            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}"
+          for query in \
+            "profiles?select=id,username" \
+            "cards?select=id,ygo_id,quantity&order=created_at.desc&limit=100" \
+            "history?select=id,action&order=created_at.desc&limit=50"; do
+            curl -fsS -o /dev/null -w "$query -> %{http_code}\n" \
+              "$URL/rest/v1/$query" -H "apikey: $KEY" -H "Authorization: Bearer $KEY"
+          done
